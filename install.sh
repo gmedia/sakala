@@ -9,11 +9,13 @@
 # Usage:
 #   sudo ./install.sh                         asks for what it needs
 #   sudo ./install.sh --domain sakala.example.com --email admin@example.com \
-#        --age-recipient age1... [--tls on-demand|dns] [--dns-provider cloudflare] \
+#        --age-recipient age1... [--tls on-demand|dns|internal] [--dns-provider cloudflare] \
 #        [--dns-module github.com/caddy-dns/cloudflare@v0.2.4] [--yes]
 #
 # In DNS mode the provider token is read from SAKALA_DNS_API_TOKEN, or asked for
-# without echo. See README.md for requirements and docs/tls.md for the TLS modes.
+# without echo. --tls internal uses Caddy's local CA instead of Let's Encrypt,
+# for tests and private networks only. See README.md for requirements and an
+# existing Docker Engine, and docs/tls.md for the TLS modes.
 
 set -euo pipefail
 
@@ -30,6 +32,7 @@ assume_yes=0
 upgrade=0
 skip_resource_check=0
 console_ok=1
+edge_restart=0
 
 # Known single-token DNS modules, pinned. Any other provider works with
 # --dns-provider and --dns-module; see docs/tls.md.
@@ -41,7 +44,7 @@ default_dns_module() {
 }
 
 usage() {
-    sed -n '3,17p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '3,19p' "$0" | sed 's/^# \{0,1\}//'
     exit "${1:-0}"
 }
 
@@ -50,7 +53,7 @@ while [ "$#" -gt 0 ]; do
         --domain) domain=${2:?--domain needs a value}; shift 2 ;;
         --email) email=${2:?--email needs a value}; shift 2 ;;
         --age-recipient) age_recipient=${2:?--age-recipient needs a value}; shift 2 ;;
-        --tls) tls_mode=${2:?--tls needs on-demand or dns}; shift 2 ;;
+        --tls) tls_mode=${2:?--tls needs on-demand, dns, or internal}; shift 2 ;;
         --dns-provider) dns_provider=${2:?--dns-provider needs a value}; shift 2 ;;
         --dns-module) dns_module=${2:?--dns-module needs a value}; shift 2 ;;
         --yes | -y) assume_yes=1; shift ;;
@@ -142,7 +145,11 @@ collect_inputs() {
             [ -n "$dns_module" ] || die "No pinned module for $dns_provider. Pass --dns-module <module path>@<version>; see docs/tls.md."
             [[ $dns_module =~ ^[A-Za-z0-9._/-]+@v[0-9][A-Za-z0-9.+-]*$ ]] || die "--dns-module must be <module path>@v<version>, got: $dns_module"
             ;;
-        *) die "--tls must be on-demand or dns, got: $tls_mode" ;;
+        internal)
+            warn "TLS mode internal: certificates come from Caddy's local CA, which browsers do not trust."
+            warn "Use it only for tests and private networks, never for a public installation."
+            ;;
+        *) die "--tls must be on-demand, dns, or internal, got: $tls_mode" ;;
     esac
 
     node_name=$(env_get "$SAKALA_ENV_FILE" SAKALA_NODE_NAME)
@@ -170,11 +177,57 @@ install_packages() {
     apt-get install -y -q --no-install-recommends "${missing[@]}"
 }
 
+# The oldest versions install.sh relies on: `dockerd --validate` (Engine 23) and
+# env_file entries with `required:` in compose.yaml (Compose 2.24).
+docker_min_engine=24.0
+docker_min_compose=2.24.0
+
+version_at_least() { [ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -n 1)" = "$2" ]; }
+
+# An engine that is already installed (Docker's docker-ce, Ubuntu's docker.io,
+# Microsoft's moby-engine, ...) is reused when it meets what Sakala needs.
+# Otherwise install.sh stops and names what is missing. It never replaces or
+# removes an engine it did not install, because other containers may need it.
+use_existing_docker() {
+    local dockerd_path engine compose package problem problems=()
+    dockerd_path=$(readlink -f "$(command -v dockerd)")
+    case $dockerd_path in
+        /snap/*) die "Docker is installed as a snap ($dockerd_path), which cannot run gVisor. Remove it (sudo snap remove docker), then run install.sh again." ;;
+    esac
+    engine=$(dockerd --version 2> /dev/null | sed -n 's/^Docker version \([0-9][0-9.]*\).*/\1/p')
+    compose=$(docker compose version --short 2> /dev/null | sed 's/^v//' || true)
+    if [ -z "$engine" ] || ! version_at_least "$engine" "$docker_min_engine"; then
+        problems+=("Docker Engine ${engine:-of unknown version} is older than $docker_min_engine")
+    fi
+    if [ -z "$compose" ]; then
+        problems+=("the Docker Compose plugin is missing")
+    elif ! version_at_least "$compose" "$docker_min_compose"; then
+        problems+=("Docker Compose $compose is older than $docker_min_compose")
+    fi
+    docker buildx version > /dev/null 2>&1 || problems+=("the Docker buildx plugin is missing")
+    if ! is_dry_run; then
+        if ! systemctl is-active --quiet docker && ! systemctl start docker; then
+            problems+=("docker.service does not start")
+        elif ! docker info > /dev/null 2>&1; then
+            problems+=("the rootful daemon at /var/run/docker.sock does not answer")
+        elif docker info --format '{{json .SecurityOptions}}' | grep rootless > /dev/null; then
+            problems+=("the daemon runs rootless; Sakala needs the rootful daemon")
+        fi
+    fi
+    package=$(dpkg-query -S "$dockerd_path" 2> /dev/null | cut -d: -f1 | head -n 1 || true)
+    if [ "${#problems[@]}" -gt 0 ]; then
+        warn "Docker is already installed (${package:-$dockerd_path}), but it cannot run Sakala:"
+        for problem in "${problems[@]}"; do warn "  - $problem"; done
+        die "Upgrade that Docker installation, or remove it and run install.sh again to get Docker's packages. install.sh does not replace an existing Docker Engine."
+    fi
+    info "Reusing the installed Docker Engine $engine${package:+ ($package)} with Compose $compose."
+}
+
 # Docker's apt repository when it serves this release, Ubuntu's own packages otherwise.
 install_docker() {
     step "Installing Docker Engine (rootful)"
-    if command -v dockerd > /dev/null && docker compose version > /dev/null 2>&1 && docker buildx version > /dev/null 2>&1; then
-        info "Already installed: $(docker --version)."
+    if command -v dockerd > /dev/null; then
+        use_existing_docker
     else
         local codename
         codename=$(. /etc/os-release && printf '%s' "$VERSION_CODENAME")
@@ -209,17 +262,35 @@ install_docker() {
 JSON
         info "Wrote /etc/docker/daemon.json (address pools, local log driver)."
         live systemctl restart docker
-    elif ! grep -q 'default-address-pools' /etc/docker/daemon.json; then
-        warn "/etc/docker/daemon.json has no default-address-pools; more than about 20 projects will fail to deploy."
+    elif ! jq -e 'has("default-address-pools")' /etc/docker/daemon.json > /dev/null 2>&1; then
+        # An existing file keeps every setting it has; only what is missing is added.
+        local merged
+        merged=$(mktemp)
+        jq '{"default-address-pools": [{"base": "172.16.0.0/12", "size": 24}], "log-driver": "local"} + .' \
+            /etc/docker/daemon.json > "$merged" || die "/etc/docker/daemon.json is not valid JSON."
+        dockerd --validate --config-file="$merged" > /dev/null ||
+            die "Adding default-address-pools to /etc/docker/daemon.json would make it invalid; see the error above."
+        cp -p /etc/docker/daemon.json "/etc/docker/daemon.json.bak-$(date -u +%Y%m%dT%H%M%SZ)"
+        write_file /etc/docker/daemon.json 0644 < "$merged"
+        rm -f "$merged"
+        info "Added default-address-pools (and log-driver local if unset) to /etc/docker/daemon.json; restarting Docker."
+        live systemctl restart docker
     fi
     live systemctl enable --now docker
 }
+
+# What the daemon reports, as clients such as buildx read it.
+#
+# Under pipefail, `producer | grep -q` fails when grep exits on the first match
+# and the producer is killed by SIGPIPE, so checks below let grep read all input.
+address_pools() { docker info --format '{{json .DefaultAddressPools}}' 2> /dev/null; }
+address_pools_ok() { ! address_pools | grep -i 'invalid' > /dev/null; }
 
 # Checked against the release's .sha512 and against the pin in versions.env.
 install_gvisor() {
     step "Installing gVisor $SAKALA_GVISOR_RELEASE"
     local base_url="https://storage.googleapis.com/gvisor/releases/release/${SAKALA_GVISOR_RELEASE}/x86_64"
-    if [ -x /usr/local/bin/runsc ] && /usr/local/bin/runsc --version 2> /dev/null | grep -q "release-${SAKALA_GVISOR_RELEASE}\$"; then
+    if [ -x /usr/local/bin/runsc ] && /usr/local/bin/runsc --version 2> /dev/null | grep "release-${SAKALA_GVISOR_RELEASE}\$" > /dev/null; then
         info "runsc release-$SAKALA_GVISOR_RELEASE is already installed."
     else
         local work
@@ -244,26 +315,38 @@ install_gvisor() {
     [ ! -f /etc/docker/daemon.json ] || cp /etc/docker/daemon.json "$candidate"
     /usr/local/bin/runsc install --config_file="$candidate" --runtime runsc -- --platform=systrap > /dev/null
     dockerd --validate --config-file="$candidate" > /dev/null
+    local registered=0
     if [ -f /etc/docker/daemon.json ] && cmp -s "$candidate" /etc/docker/daemon.json; then
         info "runsc is already registered with Docker."
     else
+        registered=1
         [ ! -f /etc/docker/daemon.json ] || cp -p /etc/docker/daemon.json "/etc/docker/daemon.json.bak-$(date -u +%Y%m%dT%H%M%SZ)"
         write_file /etc/docker/daemon.json 0644 < "$candidate"
         info "Registered runsc in /etc/docker/daemon.json."
     fi
     rm -f "$candidate"
 
-    # SIGHUP reloads runtimes without restarting containers.
-    live systemctl reload docker
+    # SIGHUP reloads runtimes without restarting containers. Only when the file
+    # changed, so a rerun or an upgrade with the same runtime leaves Docker alone.
+    [ "$registered" -eq 0 ] || live systemctl reload docker
     if ! is_dry_run; then
         local i
         for ((i = 0; i < 15; i++)); do
-            docker info --format '{{json .Runtimes}}' | grep -q '"runsc"' && break
+            docker info --format '{{json .Runtimes}}' | grep '"runsc"' > /dev/null && break
             sleep 1
         done
-        docker info --format '{{json .Runtimes}}' | grep -q '"runsc"' ||
+        docker info --format '{{json .Runtimes}}' | grep '"runsc"' > /dev/null ||
             die "Docker did not load runsc. Check: journalctl -u docker -n 50"
-        docker run --rm --runtime runsc --network none "$SAKALA_CADDY_IMAGE" dmesg 2> /dev/null | grep -q 'Starting gVisor' ||
+        # After a reload, Docker Engine 28.0.4 reports its pool base as "invalid Prefix"
+        # until restarted, and buildx then refuses every build. Seen on GitHub's
+        # ubuntu-24.04 runner; a restart restores the configured pools.
+        if ! address_pools_ok; then
+            warn "After the reload Docker reports its address pools as $(address_pools); restarting Docker."
+            systemctl restart docker
+            address_pools_ok || die "Docker reports its address pools as $(address_pools) even after a restart, so builds fail. Check /etc/docker/daemon.json."
+        fi
+        info "Docker address pools: $(address_pools)."
+        docker run --rm --runtime runsc --network none "$SAKALA_CADDY_IMAGE" dmesg 2> /dev/null | grep 'Starting gVisor' > /dev/null ||
             die "A container under runsc did not start. Check: journalctl -u docker -n 50"
         info "A test container started under gVisor."
     fi
@@ -288,7 +371,7 @@ prepare_host() {
     [ -e "$placeholder" ] || install -m 0644 -o sakala-agent -g sakala-agent /dev/stdin "$placeholder" <<< \
         '# Keeps the route import glob valid before the agent writes the first route.'
 
-    if command -v ufw > /dev/null && ufw status 2> /dev/null | grep -q '^Status: active'; then
+    if command -v ufw > /dev/null && ufw status 2> /dev/null | grep '^Status: active' > /dev/null; then
         ufw allow 80/tcp > /dev/null
         ufw allow 443/tcp > /dev/null
         ufw allow 443/udp > /dev/null
@@ -382,13 +465,23 @@ EOF
     # The project TLS snippet is rewritten only when the mode changes, so an edited DNS snippet survives.
     local tls_file="$SAKALA_CONFIG_DIR/edge/run-tls.caddy" marker="$SAKALA_CONFIG_DIR/edge/.mode"
     if [ ! -e "$tls_file" ] || [ "$(cat "$marker" 2> /dev/null)" != "$tls_mode:$dns_provider" ]; then
-        if [ "$tls_mode" = dns ]; then
-            sed "s/@@SAKALA_DNS_PROVIDER@@/$dns_provider/" "$SAKALA_HOME/caddy/run-tls.dns.caddy" | write_file "$tls_file" 0644
-        else
-            write_file "$tls_file" 0644 < "$SAKALA_HOME/caddy/run-tls.on-demand.caddy"
-        fi
+        # A running edge does not notice changed snippet files; start_stack restarts it.
+        [ ! -e "$marker" ] || edge_restart=1
+        case $tls_mode in
+            dns) sed "s/@@SAKALA_DNS_PROVIDER@@/$dns_provider/" "$SAKALA_HOME/caddy/run-tls.dns.caddy" | write_file "$tls_file" 0644 ;;
+            internal) write_file "$tls_file" 0644 < "$SAKALA_HOME/caddy/run-tls.internal.caddy" ;;
+            *) write_file "$tls_file" 0644 < "$SAKALA_HOME/caddy/run-tls.on-demand.caddy" ;;
+        esac
         printf '%s:%s\n' "$tls_mode" "$dns_provider" | write_file "$marker" 0644
         info "Project hostnames use $tls_mode certificates ($tls_file)."
+    fi
+    # Internal mode also moves app. and api. to the local CA. This file belongs to
+    # install.sh; the operator's own global options go in other files in global.d.
+    local internal_global="$SAKALA_CONFIG_DIR/edge/global.d/00-sakala-tls-internal.caddy"
+    if [ "$tls_mode" = internal ]; then
+        write_file "$internal_global" 0644 < "$SAKALA_HOME/caddy/global-tls-internal.caddy"
+    else
+        rm -f "$internal_global"
     fi
     if [ "$tls_mode" = dns ]; then
         local token=${SAKALA_DNS_API_TOKEN:-}
@@ -410,8 +503,8 @@ EOF
 ports_free_or_ours() {
     local port
     for port in 80 443; do
-        if ss -ltnH "sport = :$port" 2> /dev/null | grep -q .; then
-            if is_dry_run || compose ps --status running --services 2> /dev/null | grep -qx edge; then
+        if ss -ltnH "sport = :$port" 2> /dev/null | grep . > /dev/null; then
+            if is_dry_run || compose ps --status running --services 2> /dev/null | grep -x edge > /dev/null; then
                 continue
             fi
             die "Port $port is already in use: $(ss -ltnpH "sport = :$port" | head -n 1). Stop that service first."
@@ -443,13 +536,14 @@ start_stack() {
     live compose --profile operations run --rm migrate
     live compose --profile operations run --rm storage-init
     live compose up -d --remove-orphans api api-web reverb queue scheduler console runtime-caddy edge
+    [ "$edge_restart" -eq 0 ] || live compose restart edge
 
     wait_http "API" "http://127.0.0.1:8100/up" || die "The API did not answer. Check: sudo sakala-compose logs api api-web"
     wait_http "Console" "http://127.0.0.1:8101/healthz" || die "The Console did not answer. Check: sudo sakala-compose logs console"
 
     # Console v0.4.0 and older ignore the PUBLIC_* environment and would send
     # browsers to the hosted API. Everything else still installs.
-    if ! is_dry_run && ! curl -fsS --max-time 5 http://127.0.0.1:8101/runtime-config.js | grep -qF "\"https://api.$domain\""; then
+    if ! is_dry_run && ! curl -fsS --max-time 5 http://127.0.0.1:8101/runtime-config.js | grep -F "\"https://api.$domain\"" > /dev/null; then
         console_ok=0
         warn "The pinned Console ($SAKALA_CONSOLE_VERSION) cannot be pointed at api.$domain when it starts."
     fi
@@ -585,7 +679,12 @@ summary() {
     fi
     printf '\n'
     info "DNS must point app.$domain, api.$domain, and *.run.$domain at this server."
-    info "Certificates are requested on the first visit to each hostname."
+    if [ "$tls_mode" = internal ]; then
+        warn "TLS mode internal: clients must trust the edge's local CA. Its root certificate:"
+        warn "  sudo sakala-compose exec -T edge cat /data/caddy/pki/authorities/local/root.crt"
+    else
+        info "Certificates are requested on the first visit to each hostname."
+    fi
     info "Emails only reach the API log until you set a mailer: docs/configuration.md."
     info "Keep the age private key and $SAKALA_SECRETS_DIR/generated.env off this server too."
     if [ "$console_ok" -eq 0 ]; then

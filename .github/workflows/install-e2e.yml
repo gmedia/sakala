@@ -1,0 +1,99 @@
+# Installs Sakala for real on a fresh GitHub-hosted Ubuntu 24.04 VM (passwordless
+# sudo, systemd, Docker already installed), deploys a project from a public
+# repository under gVisor, then runs upgrade.sh and uninstall.sh. The steps are
+# phases of tests/install-e2e.sh, so a red step names the phase that failed.
+#
+# The runner has no public DNS name, so the installer runs with --tls internal
+# (Caddy's local CA, documented as tests and private networks only), and the test
+# trusts that CA explicitly instead of skipping certificate checks.
+name: Install end to end
+
+on:
+  pull_request:
+    paths:
+      - install.sh
+      - upgrade.sh
+      - uninstall.sh
+      - versions.env
+      - compose.yaml
+      - lib/**
+      - caddy/**
+      - templates/**
+      - systemd/**
+      - scripts/**
+      - tests/install-e2e.sh
+      - .github/workflows/install-e2e.yml
+  workflow_dispatch:
+  schedule:
+    # Mondays 03:00 WIB, so a moved upstream (apt, gVisor, GitHub) shows up weekly.
+    - cron: '0 20 * * 0'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: install-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  SAKALA_E2E_DISPOSABLE_HOST: 'yes'
+  # TODO(gmedia/sakala-agent): Sakala Agent v0.5.0 refuses to deploy any project
+  # whose domain is not under run.sakala.localhost, run.staging.sakala.dev, or
+  # run.sakala.dev (valid_domain in crates/sakala-agent-runtime/src/executor/docker.rs),
+  # so a self-hosted domain such as sakala.test fails every deployment with
+  # invalid_runtime_command. sakala.localhost is the only one of those a test may
+  # use. Switch to sakala.test once versions.env pins an agent without that list.
+  E2E_DOMAIN: sakala.localhost
+  E2E_REPOSITORY: https://github.com/gmedia/sakala-infra
+  E2E_ROOT_DIRECTORY: examples/static-app
+  # TODO(gmedia/sakala-console#98): the pinned Console v0.4.0 bakes the hosted API
+  # into its bundle, so "the Console points at https://api.sakala.test" is EXPECTED
+  # TO FAIL, and install.sh/upgrade.sh exit 3 for that reason alone. With '1' the
+  # job reports it as a warning and still fails if anything else is wrong, and it
+  # fails once the Console check starts passing. After versions.env pins the Console
+  # release with runtime configuration, set this to '0'.
+  E2E_CONSOLE_EXPECTED_FAIL: '1'
+
+jobs:
+  install:
+    name: Install, deploy, upgrade, uninstall
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Prepare the runner
+        env:
+          # Becomes GITHUB_PUBLIC_API_TOKEN, so GitHub's anonymous rate limit does not apply.
+          E2E_GITHUB_TOKEN: ${{ github.token }}
+        run: sudo -E tests/install-e2e.sh prepare
+
+      - name: install.sh
+        run: sudo -E tests/install-e2e.sh install
+
+      - name: Verify the installation
+        run: sudo -E tests/install-e2e.sh verify
+
+      - name: Deploy a project end to end
+        run: sudo -E tests/install-e2e.sh deploy
+
+      - name: upgrade.sh
+        run: sudo -E tests/install-e2e.sh upgrade
+
+      - name: uninstall.sh
+        run: sudo -E tests/install-e2e.sh uninstall
+
+      - name: Collect diagnostics
+        id: diagnostics
+        if: failure()
+        run: sudo -E tests/install-e2e.sh diagnostics "$RUNNER_TEMP/sakala-diagnostics"
+
+      - name: Upload diagnostics
+        if: failure() && steps.diagnostics.outcome == 'success'
+        uses: actions/upload-artifact@v7
+        with:
+          name: sakala-install-e2e-diagnostics
+          path: ${{ runner.temp }}/sakala-diagnostics
+          retention-days: 14

@@ -1,6 +1,6 @@
 # TLS untuk project: `*.run.<domain>`
 
-`app.<domain>` dan `api.<domain>` mendapat sertifikat Let's Encrypt biasa lewat edge Caddy. Yang perlu dipilih hanya cara project mendapat sertifikat, karena nama `<project>.run.<domain>` baru ada setelah orang men-deploy. Installer punya dua mode.
+`app.<domain>` dan `api.<domain>` mendapat sertifikat Let's Encrypt biasa lewat edge Caddy. Yang perlu dipilih hanya cara project mendapat sertifikat, karena nama `<project>.run.<domain>` baru ada setelah orang men-deploy. Untuk instalasi publik, installer punya dua mode. Mode ketiga, `internal`, hanya untuk tes dan jaringan privat; lihat [bagian terakhir](#mode-internal-hanya-untuk-tes-dan-jaringan-privat).
 
 | | `on-demand` (default) | `dns` |
 | --- | --- | --- |
@@ -70,3 +70,27 @@ Untuk instalasi percobaan, arahkan edge ke Let's Encrypt staging. Sertifikatnya 
 sudo sed -i 's|^SAKALA_ACME_CA=.*|SAKALA_ACME_CA=https://acme-staging-v02.api.letsencrypt.org/directory|' /etc/sakala/sakala.env
 sudo sakala-compose up -d edge
 ```
+
+## Mode `internal`: hanya untuk tes dan jaringan privat
+
+```bash
+sudo ./install.sh --domain sakala.test --email admin@sakala.test --age-recipient age1... --tls internal --yes
+```
+
+Semua hostname, termasuk `app.` dan `api.`, mendapat sertifikat dari CA lokal Caddy, bukan dari Let's Encrypt. Tidak ada request ACME, jadi server tidak perlu nama DNS publik maupun port yang terbuka dari internet. Itulah yang dipakai tes end-to-end di runner GitHub (`.github/workflows/install-e2e.yml`).
+
+**Jangan pakai untuk instalasi publik.** Browser dan klien lain menolak sertifikatnya sampai root CA itu dipercaya secara manual di setiap perangkat, dan siapa pun yang memegang kunci CA di volume edge bisa menerbitkan sertifikat yang dipercaya perangkat tersebut. Installer mencetak peringatan setiap kali mode ini dipilih.
+
+Yang ditulis installer:
+
+- `/etc/sakala/edge/global.d/00-sakala-tls-internal.caddy` berisi `local_certs` dan `skip_install_trust`. File ini milik installer dan dihapus kalau mode diganti; opsi global milikmu taruh di file lain di `global.d`.
+- `/etc/sakala/edge/run-tls.caddy` berisi `tls internal`, satu sertifikat wildcard untuk `*.run.<domain>`.
+
+Root CA ada di volume edge. Ambil, lalu percayai di klien yang perlu, atau berikan langsung ke `curl`:
+
+```bash
+sudo sakala-compose exec -T edge cat /data/caddy/pki/authorities/local/root.crt > sakala-local-ca.crt
+curl --cacert sakala-local-ca.crt https://api.sakala.test/up
+```
+
+Hostname tetap harus mengarah ke server, misalnya lewat DNS internal atau `/etc/hosts`. Mengganti mode dengan menjalankan ulang installer (`--tls on-demand` atau `--tls dns`) menulis ulang kedua file di atas dan me-restart edge.

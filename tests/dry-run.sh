@@ -40,7 +40,7 @@ fake_recipient=age1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq
 expect_fail "refuses a bad domain" "Not a domain name" "${install[@]}" --domain 'not a domain' --age-recipient "$fake_recipient"
 expect_fail "refuses a private age key" "That is a private key" "${install[@]}" --domain sakala.example.com --age-recipient AGE-SECRET-KEY-1QQQ
 expect_fail "refuses a malformed age key" "Not an age public key" "${install[@]}" --domain sakala.example.com --age-recipient age1short
-expect_fail "refuses an unknown TLS mode" "must be on-demand or dns" "${install[@]}" --domain sakala.example.com --age-recipient "$fake_recipient" --tls magic
+expect_fail "refuses an unknown TLS mode" "must be on-demand, dns, or internal" "${install[@]}" --domain sakala.example.com --age-recipient "$fake_recipient" --tls magic
 expect_fail "refuses missing input without a terminal" "is required" /opt/sakala/install.sh --yes --skip-resource-check < /dev/null
 
 apt-get update -qq > /dev/null && apt-get install -y -qq age > /dev/null
@@ -83,7 +83,16 @@ before=$(sha256sum /etc/sakala/secrets/generated.env)
 if "${install[@]}" --domain sakala.example.com --age-recipient "$recipient" > /root/rerun.log 2>&1; then pass "second run succeeds"; else fail "second run"; tail -20 /root/rerun.log; fi
 [ "$before" = "$(sha256sum /etc/sakala/secrets/generated.env)" ] && pass "second run keeps the generated secrets" || fail "second run changed generated.env"
 grep -q 'release-.* is already installed' /root/rerun.log && pass "second run skips gVisor" || fail "second run reinstalled gVisor"
+grep -q 'Reusing the installed Docker Engine' /root/rerun.log && pass "second run reuses the installed Docker Engine" || fail "second run did not detect the installed Docker Engine"
 expect_fail "refuses to change the domain" "installed for sakala.example.com" "${install[@]}" --domain other.example.com
+
+# An existing daemon.json without address pools, as on a server that already ran Docker.
+jq 'del(."default-address-pools") | ."log-driver" = "json-file"' /etc/docker/daemon.json > /root/daemon.json
+cp /root/daemon.json /etc/docker/daemon.json
+if "${install[@]}" > /root/merge.log 2>&1; then pass "rerun with a daemon.json lacking address pools"; else fail "rerun with an existing daemon.json"; tail -20 /root/merge.log; fi
+jq -e '."default-address-pools" and ."log-driver" == "json-file" and .runtimes.runsc' /etc/docker/daemon.json > /dev/null &&
+    pass "daemon.json gains address pools and keeps its own settings" || fail "daemon.json after merge: $(cat /etc/docker/daemon.json)"
+ls /etc/docker/daemon.json.bak-* > /dev/null 2>&1 && pass "the previous daemon.json is kept as a backup" || fail "no daemon.json backup"
 
 if SAKALA_DNS_API_TOKEN=test-token-123 "${install[@]}" --tls dns --dns-provider cloudflare > /root/dns.log 2>&1; then pass "DNS mode dry run"; else fail "DNS mode dry run"; tail -20 /root/dns.log; fi
 mode_is 600 /etc/sakala/secrets/dns.env
@@ -92,6 +101,15 @@ contains /etc/sakala/sakala.env 'SAKALA_DNS_MODULE=github.com/caddy-dns/cloudfla
 grep -q '^SAKALA_EDGE_IMAGE=sakala-edge-dns:' /etc/sakala/sakala.env && pass "DNS mode selects the locally built edge" || fail "no edge image in DNS mode"
 grep -q 'docker build --pull -f /opt/sakala/caddy/Dockerfile.dns' /root/dns.log && pass "DNS mode builds the edge" || fail "DNS mode build line missing"
 lacks /root/dns.log 'test-token-123'
+
+if "${install[@]}" --tls internal > /root/internal.log 2>&1; then pass "internal TLS mode dry run"; else fail "internal TLS mode dry run"; tail -20 /root/internal.log; fi
+contains /etc/sakala/edge/run-tls.caddy 'tls internal'
+contains /etc/sakala/edge/global.d/00-sakala-tls-internal.caddy 'local_certs'
+contains /etc/sakala/sakala.env 'SAKALA_TLS_MODE=internal'
+grep -q '^SAKALA_EDGE_IMAGE=$' /etc/sakala/sakala.env && pass "internal mode uses the stock edge image" || fail "internal mode kept a DNS edge image"
+[ ! -e /etc/sakala/secrets/dns.env ] && pass "internal mode removes the DNS token" || fail "dns.env remains in internal mode"
+grep -q 'compose restart edge' /root/internal.log && pass "a TLS mode change restarts the edge" || fail "no edge restart after the TLS mode change"
+grep -q 'only for tests and private networks' /root/internal.log && pass "internal mode warns that it is not for public installs" || fail "no internal-mode warning"
 
 if /opt/sakala/upgrade.sh > /root/upgrade.log 2>&1; then pass "upgrade.sh dry run"; else fail "upgrade.sh"; tail -20 /root/upgrade.log; fi
 grep -q 'systemctl start sakala-backup.service' /root/upgrade.log && pass "upgrade backs up first" || fail "upgrade did not back up first"
