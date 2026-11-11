@@ -1,0 +1,42 @@
+# Installed by install.sh as /etc/systemd/system/sakala-backup.service.
+#
+# Runs as root, because the Compose stack runs on the rootful Docker daemon.
+# Docker access is root-equivalent, so the sandbox below limits the script
+# itself, not what the daemon can do.
+#
+# Exit 3 means the database set is safe but RustFS, the secrets, or the off-host
+# copy failed. It is deliberately not a success status, so `systemctl --failed`
+# shows it.
+[Unit]
+Description=Back up the Sakala database, secrets, and avatars
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=@@SAKALA_HOME@@
+Environment=SAKALA_BACKUP_ENV_FILE=/etc/sakala/backup.env
+ExecStart=@@SAKALA_HOME@@/scripts/backup.sh
+TimeoutStartSec=2h
+UMask=0077
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/sakala/backups
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

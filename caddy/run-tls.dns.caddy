@@ -1,0 +1,12 @@
+# Written by install.sh to /etc/sakala/edge/run-tls.caddy for SAKALA_TLS_MODE=dns.
+# One wildcard certificate for *.run.<domain> through the DNS-01 challenge. The
+# edge image is built with the provider module (caddy/Dockerfile.dns), and the
+# token comes from /etc/sakala/secrets/dns.env.
+#
+# This line fits providers whose module takes the API token as its only argument,
+# such as cloudflare. For a provider that needs other fields, edit
+# /etc/sakala/edge/run-tls.caddy following that module's README; reruns of
+# install.sh keep an edited file.
+tls {
+	dns @@SAKALA_DNS_PROVIDER@@ {env.SAKALA_DNS_API_TOKEN}
+}

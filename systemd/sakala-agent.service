@@ -1,0 +1,35 @@
+# Installed by install.sh as /etc/systemd/system/sakala-agent.service.
+[Unit]
+Description=Sakala Agent (builds and runs deployed projects under gVisor)
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+User=sakala-agent
+Group=sakala-agent
+# Access to the rootful Docker socket. That is root-equivalent on this server,
+# which is the accepted cost of a single-node install; see README.md.
+SupplementaryGroups=docker
+EnvironmentFile=/etc/sakala/agent.env
+EnvironmentFile=/etc/sakala/secrets/agent-credentials.env
+Environment=DOCKER_HOST=unix:///var/run/docker.sock
+# The agent reports $HOSTNAME in heartbeats; systemd does not export it.
+Environment=HOSTNAME=%H
+# Buildx state and the Railpack cache live in agent-owned directories.
+Environment=DOCKER_CONFIG=/var/lib/sakala/docker
+Environment=XDG_CACHE_HOME=/var/lib/sakala/cache
+Environment=HOME=/var/lib/sakala/agent
+ExecStart=/usr/local/bin/sakala-agent
+Restart=always
+RestartSec=5
+# Must exceed SAKALA_SHUTDOWN_GRACE_SECONDS so in-flight commands can clean up.
+TimeoutStopSec=45
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ReadWritePaths=/var/lib/sakala
+
+[Install]
+WantedBy=multi-user.target

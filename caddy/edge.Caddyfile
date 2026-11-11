@@ -1,0 +1,94 @@
+# The public edge of a single-node Sakala. {$SAKALA_DOMAIN}, {$SAKALA_ADMIN_EMAIL},
+# and {$SAKALA_ACME_CA} come from the container environment (compose.yaml).
+#
+#   app.<domain>         Console
+#   api.<domain>         API, Reverb WebSockets (/app/*), public avatar reads (/storage/*)
+#   *.run.<domain>       deployed projects, through the runtime router
+#
+# How project hostnames get certificates is decided by the installer, which writes
+# /etc/sakala/edge/run-tls.caddy (mounted at /etc/caddy/sakala). See docs/tls.md.
+{
+	email {$SAKALA_ADMIN_EMAIL}
+	acme_ca {$SAKALA_ACME_CA}
+
+	# Used only when run-tls.caddy asks for on-demand certificates. The answer
+	# comes from the :5555 site below, which never leaves this container.
+	on_demand_tls {
+		ask http://127.0.0.1:5555/tls-ask
+	}
+
+	# Extra global options from the operator, for example `local_certs` for a test
+	# install. Optional; an empty directory is fine.
+	import /etc/caddy/sakala/global.d/*.caddy
+}
+
+app.{$SAKALA_DOMAIN} {
+	encode zstd gzip
+	reverse_proxy console:8080
+}
+
+api.{$SAKALA_DOMAIN} {
+	# Avatars. The prefix is stripped so RustFS receives /<bucket>/avatars/<key>.
+	# Only reads pass; every write to storage stays inside the API.
+	@storage {
+		path /storage/*
+		method GET HEAD
+	}
+	handle @storage {
+		uri strip_prefix /storage
+		reverse_proxy rustfs:9000
+	}
+
+	@reverb path /app/*
+	handle @reverb {
+		reverse_proxy reverb:8080
+	}
+
+	handle {
+		reverse_proxy api-web:8080
+	}
+}
+
+*.run.{$SAKALA_DOMAIN} {
+	import /etc/caddy/sakala/run-tls.caddy
+
+	# Host is preserved, so the runtime router picks the project's route. An
+	# unknown project gets the router's 404.
+	reverse_proxy sakala-caddy:80
+}
+
+# Answers Caddy's on-demand TLS question for a project hostname: yes only when
+# the agent has written a route for it. It asks the runtime router with that Host;
+# the router marks its own "no such route" answer with X-Sakala-Route: missing,
+# which a deployed project never gets. So a random name under run.<domain> never
+# costs a certificate request, and nothing depends on a particular DNS provider.
+#
+# When sakala-api gains its own check (docs/tls.md, "What the API should add"),
+# replace this site with `ask http://api-web:8080/...` in the global options.
+http://127.0.0.1:5555 {
+	bind 127.0.0.1
+
+	@ask {
+		path /tls-ask
+		expression `{query.domain}.endsWith('.run.{$SAKALA_DOMAIN}')`
+	}
+	handle @ask {
+		reverse_proxy sakala-caddy:80 {
+			method HEAD
+			rewrite /
+			header_up Host {query.domain}
+
+			@unrouted header X-Sakala-Route missing
+			handle_response @unrouted {
+				respond 404
+			}
+			handle_response {
+				respond 200
+			}
+		}
+	}
+
+	handle {
+		respond 404
+	}
+}

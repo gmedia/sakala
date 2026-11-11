@@ -1,0 +1,24 @@
+{
+	# The agent reaches the admin endpoint only through `docker exec`. Port 2019 is
+	# not published to the host or any network.
+	admin localhost:2019
+	auto_https off
+}
+
+# The agent writes one validated route per project into this read-only mount,
+# then validates and reloads this container.
+import /etc/caddy/sites/*.Caddyfile
+
+:80 {
+	handle /healthz {
+		respond "ok" 200
+	}
+
+	# An unknown hostname must never look deployed. The header lets the edge tell
+	# this answer apart from a project's own 404 when deciding whether a hostname
+	# may get a certificate (caddy/edge.Caddyfile).
+	handle {
+		header X-Sakala-Route missing
+		respond "Not found" 404
+	}
+}

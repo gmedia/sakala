@@ -1,0 +1,18 @@
+# syntax=docker/dockerfile:1.7
+
+# The edge with a DNS provider module, for a wildcard certificate on
+# *.run.<domain> (SAKALA_TLS_MODE=dns). install.sh builds it on the server:
+#
+#   docker build -f caddy/Dockerfile.dns --build-arg DNS_MODULE=github.com/caddy-dns/cloudflare@v0.2.4 .
+#
+# Keep both images on the Caddy version of SAKALA_CADDY_IMAGE in versions.env.
+# xcaddy fetches the module through the Go module proxy, which checks it against
+# the Go checksum database.
+FROM caddy:2.11.3-builder-alpine@sha256:3eae6b351ecdb05da6d16e341261a457692d344a435764c5ece7a60cf03a23f3 AS build
+
+ARG DNS_MODULE
+RUN test -n "$DNS_MODULE" && xcaddy build --with "$DNS_MODULE"
+
+FROM caddy:2.11.3-alpine@sha256:86deaf5e3d3408a6ccec08fbb79989783dd26e206ae10bcf78a801dc8c9ab794
+
+COPY --from=build /usr/bin/caddy /usr/bin/caddy
