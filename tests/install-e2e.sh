@@ -429,6 +429,8 @@ phase_upgrade() {
     credentials=$(sha /etc/sakala/secrets/agent-credentials.env)
     sets_before=$(backup_sets)
     host=$(sed -n 2p "$state/project")
+    local project_started
+    project_started=$(docker ps -q --filter label=dev.sakala.managed=true | xargs -r docker inspect --format '{{.Id}} {{.State.StartedAt}}')
 
     step "upgrade.sh with the same pins"
     run_script upgrade "$home/upgrade.sh"
@@ -454,6 +456,9 @@ phase_upgrade() {
     check_agent
     retry 30 2 https_ok "https://$host/" || fail "https://$host/ answered $(https_status "https://$host/") after the upgrade, expected 200"
     pass "https://$host/ still 200 after the upgrade"
+    [ "$(docker ps -q --filter label=dev.sakala.managed=true | xargs -r docker inspect --format '{{.Id}} {{.State.StartedAt}}')" = "$project_started" ] ||
+        fail "The upgrade restarted the project container, although no pin changed."
+    pass "the project container kept running through the upgrade (same container, same start time)"
 }
 
 phase_uninstall() {

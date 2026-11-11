@@ -312,17 +312,20 @@ install_gvisor() {
     [ ! -f /etc/docker/daemon.json ] || cp /etc/docker/daemon.json "$candidate"
     /usr/local/bin/runsc install --config_file="$candidate" --runtime runsc -- --platform=systrap > /dev/null
     dockerd --validate --config-file="$candidate" > /dev/null
+    local registered=0
     if [ -f /etc/docker/daemon.json ] && cmp -s "$candidate" /etc/docker/daemon.json; then
         info "runsc is already registered with Docker."
     else
+        registered=1
         [ ! -f /etc/docker/daemon.json ] || cp -p /etc/docker/daemon.json "/etc/docker/daemon.json.bak-$(date -u +%Y%m%dT%H%M%SZ)"
         write_file /etc/docker/daemon.json 0644 < "$candidate"
         info "Registered runsc in /etc/docker/daemon.json."
     fi
     rm -f "$candidate"
 
-    # SIGHUP reloads runtimes without restarting containers.
-    live systemctl reload docker
+    # SIGHUP reloads runtimes without restarting containers. Only when the file
+    # changed, so a rerun or an upgrade with the same runtime leaves Docker alone.
+    [ "$registered" -eq 0 ] || live systemctl reload docker
     if ! is_dry_run; then
         local i
         for ((i = 0; i < 15; i++)); do
@@ -331,8 +334,9 @@ install_gvisor() {
         done
         docker info --format '{{json .Runtimes}}' | grep -q '"runsc"' ||
             die "Docker did not load runsc. Check: journalctl -u docker -n 50"
-        # buildx refuses to build when the daemon reports an address pool it cannot
-        # parse, which a reload can leave behind on some Engine versions.
+        # After a reload, Docker Engine 28.0.4 reports its pool base as "invalid Prefix"
+        # until restarted, and buildx then refuses every build. Seen on GitHub's
+        # ubuntu-24.04 runner; a restart restores the configured pools.
         if ! address_pools_ok; then
             warn "After the reload Docker reports its address pools as $(address_pools); restarting Docker."
             systemctl restart docker
