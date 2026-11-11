@@ -119,7 +119,8 @@ phase_prepare() {
 
     step "Pointing app.$domain and api.$domain at 127.0.0.1"
     grep -q " api.$domain\$" /etc/hosts || printf '127.0.0.1 app.%s api.%s\n' "$domain" "$domain" >> /etc/hosts
-    getent hosts "api.$domain" | grep -q '^127.0.0.1' || fail "api.$domain does not resolve to 127.0.0.1"
+    # *.localhost names may also resolve to ::1 first; 127.0.0.1 must be among the answers.
+    getent ahostsv4 "api.$domain" | grep '^127.0.0.1 ' > /dev/null || fail "api.$domain does not resolve to 127.0.0.1"
     pass "/etc/hosts has app.$domain and api.$domain"
 
     step "Making a backup key (the private key stays in $state)"

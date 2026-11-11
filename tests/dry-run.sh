@@ -86,6 +86,14 @@ grep -q 'release-.* is already installed' /root/rerun.log && pass "second run sk
 grep -q 'Reusing the installed Docker Engine' /root/rerun.log && pass "second run reuses the installed Docker Engine" || fail "second run did not detect the installed Docker Engine"
 expect_fail "refuses to change the domain" "installed for sakala.example.com" "${install[@]}" --domain other.example.com
 
+# An existing daemon.json without address pools, as on a server that already ran Docker.
+jq 'del(."default-address-pools") | ."log-driver" = "json-file"' /etc/docker/daemon.json > /root/daemon.json
+cp /root/daemon.json /etc/docker/daemon.json
+if "${install[@]}" > /root/merge.log 2>&1; then pass "rerun with a daemon.json lacking address pools"; else fail "rerun with an existing daemon.json"; tail -20 /root/merge.log; fi
+jq -e '."default-address-pools" and ."log-driver" == "json-file" and .runtimes.runsc' /etc/docker/daemon.json > /dev/null &&
+    pass "daemon.json gains address pools and keeps its own settings" || fail "daemon.json after merge: $(cat /etc/docker/daemon.json)"
+ls /etc/docker/daemon.json.bak-* > /dev/null 2>&1 && pass "the previous daemon.json is kept as a backup" || fail "no daemon.json backup"
+
 if SAKALA_DNS_API_TOKEN=test-token-123 "${install[@]}" --tls dns --dns-provider cloudflare > /root/dns.log 2>&1; then pass "DNS mode dry run"; else fail "DNS mode dry run"; tail -20 /root/dns.log; fi
 mode_is 600 /etc/sakala/secrets/dns.env
 contains /etc/sakala/edge/run-tls.caddy 'dns cloudflare {env.SAKALA_DNS_API_TOKEN}'
