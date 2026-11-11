@@ -1,0 +1,99 @@
+# Upgrades a real installation from the previous pins to the current ones on a fresh
+# GitHub-hosted Ubuntu 24.04 VM: installs the commit before the last pin change
+# (git clone into /opt/sakala, as an operator does), deploys a project, then checks
+# out this commit and runs upgrade.sh, which is what README.md tells operators to do.
+# The steps are phases of tests/upgrade-e2e.sh, which reuses the checks of
+# tests/install-e2e.sh, so a red step names the phase that failed.
+#
+# Like install-e2e, it runs with --tls internal and a domain in /etc/hosts. The domain
+# follows the old agent: before v0.6.0 the agent deploys only under the hosted Sakala
+# suffixes, so those pins can deploy only as sakala.localhost, the domain their own
+# install test used. Newer previous pins use the self-hosted sakala.test.
+name: Upgrade end to end
+
+on:
+  pull_request:
+    paths:
+      - install.sh
+      - upgrade.sh
+      - uninstall.sh
+      - versions.env
+      - compose.yaml
+      - lib/**
+      - caddy/**
+      - templates/**
+      - systemd/**
+      - scripts/**
+      - tests/install-e2e.sh
+      - tests/upgrade-e2e.sh
+      - tests/console-browser/**
+      - .github/workflows/upgrade-e2e.yml
+  workflow_dispatch:
+    inputs:
+      from_ref:
+        description: 'Commit or tag to upgrade from. Empty: the commit before the last pin change in versions.env.'
+        required: false
+        default: ''
+  schedule:
+    # Mondays 04:00 WIB, an hour after install-e2e.
+    - cron: '0 21 * * 0'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: upgrade-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  SAKALA_E2E_DISPOSABLE_HOST: 'yes'
+  E2E_REPOSITORY: https://github.com/gmedia/sakala-infra
+  E2E_ROOT_DIRECTORY: examples/static-app
+
+jobs:
+  upgrade:
+    name: Install the previous pins, deploy, upgrade to these
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The previous pins come from the history of versions.env.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Choose the previous pins
+        env:
+          FROM_REF: ${{ inputs.from_ref }}
+        run: tests/upgrade-e2e.sh from-ref "$FROM_REF" >> "$GITHUB_ENV"
+
+      - name: Prepare the runner
+        env:
+          # Becomes GITHUB_PUBLIC_API_TOKEN, so GitHub's anonymous rate limit does not apply.
+          E2E_GITHUB_TOKEN: ${{ github.token }}
+        run: sudo -E tests/upgrade-e2e.sh prepare
+
+      - name: install.sh with the previous pins
+        run: sudo -E tests/upgrade-e2e.sh install
+
+      - name: Verify the old installation
+        run: sudo -E tests/upgrade-e2e.sh verify
+
+      - name: Deploy a project on the old installation
+        run: sudo -E tests/upgrade-e2e.sh deploy
+
+      - name: upgrade.sh to these pins, then verify
+        run: sudo -E tests/upgrade-e2e.sh upgrade
+
+      - name: Collect diagnostics
+        id: diagnostics
+        if: failure()
+        run: sudo -E tests/upgrade-e2e.sh diagnostics "$RUNNER_TEMP/sakala-diagnostics"
+
+      - name: Upload diagnostics
+        if: failure() && steps.diagnostics.outcome == 'success'
+        uses: actions/upload-artifact@v7
+        with:
+          name: sakala-upgrade-e2e-diagnostics
+          path: ${{ runner.temp }}/sakala-diagnostics
+          retention-days: 14

@@ -109,7 +109,11 @@ phase_prepare() {
         chown -R root:root "$home"
     fi
     pass "$home is a copy of $(git -C "$repo" rev-parse --short HEAD 2> /dev/null || echo 'this checkout')"
+    prepare_machine
+}
 
+# Everything prepare does besides putting the installation in place.
+prepare_machine() {
     step "Pointing app.$domain and api.$domain at 127.0.0.1"
     grep -q " api.$domain\$" /etc/hosts || printf '127.0.0.1 app.%s api.%s\n' "$domain" "$domain" >> /etc/hosts
     getent ahostsv4 "api.$domain" | grep '^127.0.0.1 ' > /dev/null || fail "api.$domain does not resolve to 127.0.0.1"
@@ -273,7 +277,8 @@ agent_status() {
 
 agent_ready() { agent_status | grep '^ready active' > /dev/null; }
 
-check_agent() {
+# The agent is up and ready in the API, with runsc. Every pinned agent release passes this.
+check_agent_ready() {
     step "The agent is registered and ready, with runsc as the runtime"
     systemctl is-active --quiet sakala-agent.service || {
         journalctl -u sakala-agent.service -n 50 --no-pager
@@ -294,6 +299,10 @@ check_agent() {
     docker info --format '{{json .Runtimes}}' | grep '"runsc"' > /dev/null || fail "runsc is not registered with Docker."
     grep -qx 'SAKALA_CONTAINER_RUNTIME=runsc' /etc/sakala/agent.env || fail "agent.env does not select runsc."
     pass "runsc registered with Docker and selected in agent.env ($(/usr/local/bin/runsc --version | head -n 1))"
+}
+
+check_agent() {
+    check_agent_ready
     grep -qx "SAKALA_PROJECT_DOMAIN_SUFFIXES=run.$domain" /etc/sakala/agent.env ||
         fail "agent.env does not set SAKALA_PROJECT_DOMAIN_SUFFIXES=run.$domain."
     grep -qx "SAKALA_PROJECT_DEFAULT_DOMAIN=run.$domain" /etc/sakala/secrets/api.env ||
@@ -415,7 +424,7 @@ phase_deploy() {
     login
 
     step "Creating a project from $repository ($root_directory)"
-    local name created project_id project slug host deployment deployment_id
+    local name created project_id project slug host
     name="e2e-$(date -u +%H%M%S)"
     created=$(api_json 201 POST /api/v1/app/projects --data "$(jq -cn --arg name "$name" --arg url "$repository" \
         --arg branch "$branch" --arg root "$root_directory" \
@@ -433,18 +442,30 @@ phase_deploy() {
     grep -q " $host\$" /etc/hosts || printf '127.0.0.1 %s\n' "$host" >> /etc/hosts
     pass "project $slug at $host (added to /etc/hosts)"
 
+    deploy_project "$project_id" "e2e-$project_id"
+    fetch_project "$host"
+    check_project_runtime
+}
+
+# deploy_project <project id> <idempotency key>: queues a deployment and waits for it.
+deploy_project() {
+    local deployment deployment_id
     step "Deploying"
-    deployment=$(api_json "201 202" POST "/api/v1/app/projects/$project_id/deployments" \
-        -H "Idempotency-Key: e2e-$project_id" --data "$(jq -cn --arg branch "$branch" '{branch: $branch}')")
+    deployment=$(api_json "201 202" POST "/api/v1/app/projects/$1/deployments" \
+        -H "Idempotency-Key: $2" --data "$(jq -cn --arg branch "$branch" '{branch: $branch}')")
     deployment_id=$(jq -r '.data.id' <<< "$deployment")
     pass "deployment $deployment_id queued"
-    wait_deployment "$project_id" "$deployment_id"
+    wait_deployment "$1" "$deployment_id"
     pass "deployment succeeded"
+}
 
-    step "Fetching https://$host/"
-    retry 30 2 https_ok "https://$host/" || fail "https://$host/ answered $(https_status "https://$host/"), expected 200"
-    pass "https://$host/ 200: $(curl -sS --max-time 20 --cacert "$ca" "https://$host/" | tr -s ' \n' ' ' | head -c 100)"
+fetch_project() {
+    step "Fetching https://$1/"
+    retry 30 2 https_ok "https://$1/" || fail "https://$1/ answered $(https_status "https://$1/"), expected 200"
+    pass "https://$1/ 200: $(curl -sS --max-time 20 --cacert "$ca" "https://$1/" | tr -s ' \n' ' ' | head -c 100)"
+}
 
+check_project_runtime() {
     step "The project container runs under $expected_runtime"
     local containers runtime container
     containers=$(docker ps -q --filter label=dev.sakala.managed=true)
@@ -599,14 +620,17 @@ PY
     pass "diagnostics in $out ($(find "$out" -type f | wc -l) files, secrets redacted)"
 }
 
-case ${1:-} in
-    prepare | install | verify | deploy | upgrade | uninstall | diagnostics)
-        phase=$1
-        shift
-        "phase_$phase" "$@"
-        ;;
-    *)
-        sed -n '3,26p' "$0" | sed 's/^# \{0,1\}//'
-        exit 2
-        ;;
-esac
+# tests/upgrade-e2e.sh sources this file for its functions and runs its own phases.
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+    case ${1:-} in
+        prepare | install | verify | deploy | upgrade | uninstall | diagnostics)
+            phase=$1
+            shift
+            "phase_$phase" "$@"
+            ;;
+        *)
+            sed -n '3,26p' "$0" | sed 's/^# \{0,1\}//'
+            exit 2
+            ;;
+    esac
+fi
