@@ -1,0 +1,7 @@
+# Written by install.sh to /etc/sakala/edge/global.d/00-sakala-tls-internal.caddy
+# for SAKALA_TLS_MODE=internal, and removed in every other mode. Every hostname,
+# app. and api. included, gets its certificate from Caddy's local CA instead of
+# ACME. The edge runs in a container, so it never touches the host's trust store.
+# Only for tests and private networks (docs/tls.md).
+local_certs
+skip_install_trust

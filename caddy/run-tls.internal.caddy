@@ -1,0 +1,5 @@
+# Written by install.sh to /etc/sakala/edge/run-tls.caddy for SAKALA_TLS_MODE=internal.
+# One wildcard certificate for *.run.<domain> from Caddy's local CA, which no
+# browser or client trusts until you add its root certificate yourself. Only for
+# tests and private networks, never for a public installation (docs/tls.md).
+tls internal
