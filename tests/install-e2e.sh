@@ -231,7 +231,7 @@ agent_status() {
         "select status, auth_status, coalesce(capabilities::text, '') from agent_nodes where agent_id = '$agent_id'" 2> /dev/null
 }
 
-agent_ready() { agent_status | grep -q '^ready active'; }
+agent_ready() { agent_status | grep '^ready active' > /dev/null; }
 
 check_agent() {
     step "The agent is registered and ready, with runsc as the runtime"
@@ -251,7 +251,7 @@ check_agent() {
         fail "The agent reported a failed preflight check."
     fi
     note "$(journalctl -u sakala-agent.service --no-pager | grep -c 'runtime preflight check passed') preflight checks passed"
-    docker info --format '{{json .Runtimes}}' | grep -q '"runsc"' || fail "runsc is not registered with Docker."
+    docker info --format '{{json .Runtimes}}' | grep '"runsc"' > /dev/null || fail "runsc is not registered with Docker."
     grep -qx 'SAKALA_CONTAINER_RUNTIME=runsc' /etc/sakala/agent.env || fail "agent.env does not select runsc."
     pass "runsc registered with Docker and selected in agent.env ($(/usr/local/bin/runsc --version | head -n 1))"
 }
@@ -414,7 +414,7 @@ phase_deploy() {
     done
     if [ "$expected_runtime" = runsc ]; then
         container=$(head -n 1 <<< "$containers")
-        docker exec "$container" dmesg 2> /dev/null | grep -q 'Starting gVisor' ||
+        docker exec "$container" dmesg 2> /dev/null | grep 'Starting gVisor' > /dev/null ||
             fail "The project container has runtime runsc, but its kernel is not gVisor."
         pass "the project container's kernel is gVisor (dmesg: Starting gVisor)"
     fi
@@ -486,7 +486,7 @@ phase_uninstall() {
     [ -z "$(docker volume ls -q --filter label=com.docker.compose.project=sakala)" ] || fail "Control plane volumes remain."
     ! docker network inspect sakala-runtime > /dev/null 2>&1 || fail "The sakala-runtime network remains."
     pass "containers, volumes, and networks are gone"
-    ! ss -ltnH 'sport = :443' | grep -q . || fail "Something still listens on port 443."
+    ! ss -ltnH 'sport = :443' | grep . > /dev/null || fail "Something still listens on port 443."
     { [ -x /usr/local/bin/runsc ] && systemctl is-active --quiet docker; } || fail "Docker or gVisor was removed, but uninstall.sh documents keeping them."
     pass "Docker and gVisor stay installed, as documented"
 }

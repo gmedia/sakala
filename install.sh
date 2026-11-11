@@ -210,7 +210,7 @@ use_existing_docker() {
             problems+=("docker.service does not start")
         elif ! docker info > /dev/null 2>&1; then
             problems+=("the rootful daemon at /var/run/docker.sock does not answer")
-        elif docker info --format '{{json .SecurityOptions}}' | grep -q rootless; then
+        elif docker info --format '{{json .SecurityOptions}}' | grep rootless > /dev/null; then
             problems+=("the daemon runs rootless; Sakala needs the rootful daemon")
         fi
     fi
@@ -280,14 +280,17 @@ JSON
 }
 
 # What the daemon reports, as clients such as buildx read it.
+#
+# Under pipefail, `producer | grep -q` fails when grep exits on the first match
+# and the producer is killed by SIGPIPE, so checks below let grep read all input.
 address_pools() { docker info --format '{{json .DefaultAddressPools}}' 2> /dev/null; }
-address_pools_ok() { ! address_pools | grep -qi 'invalid'; }
+address_pools_ok() { ! address_pools | grep -i 'invalid' > /dev/null; }
 
 # Checked against the release's .sha512 and against the pin in versions.env.
 install_gvisor() {
     step "Installing gVisor $SAKALA_GVISOR_RELEASE"
     local base_url="https://storage.googleapis.com/gvisor/releases/release/${SAKALA_GVISOR_RELEASE}/x86_64"
-    if [ -x /usr/local/bin/runsc ] && /usr/local/bin/runsc --version 2> /dev/null | grep -q "release-${SAKALA_GVISOR_RELEASE}\$"; then
+    if [ -x /usr/local/bin/runsc ] && /usr/local/bin/runsc --version 2> /dev/null | grep "release-${SAKALA_GVISOR_RELEASE}\$" > /dev/null; then
         info "runsc release-$SAKALA_GVISOR_RELEASE is already installed."
     else
         local work
@@ -329,10 +332,10 @@ install_gvisor() {
     if ! is_dry_run; then
         local i
         for ((i = 0; i < 15; i++)); do
-            docker info --format '{{json .Runtimes}}' | grep -q '"runsc"' && break
+            docker info --format '{{json .Runtimes}}' | grep '"runsc"' > /dev/null && break
             sleep 1
         done
-        docker info --format '{{json .Runtimes}}' | grep -q '"runsc"' ||
+        docker info --format '{{json .Runtimes}}' | grep '"runsc"' > /dev/null ||
             die "Docker did not load runsc. Check: journalctl -u docker -n 50"
         # After a reload, Docker Engine 28.0.4 reports its pool base as "invalid Prefix"
         # until restarted, and buildx then refuses every build. Seen on GitHub's
@@ -343,7 +346,7 @@ install_gvisor() {
             address_pools_ok || die "Docker reports its address pools as $(address_pools) even after a restart, so builds fail. Check /etc/docker/daemon.json."
         fi
         info "Docker address pools: $(address_pools)."
-        docker run --rm --runtime runsc --network none "$SAKALA_CADDY_IMAGE" dmesg 2> /dev/null | grep -q 'Starting gVisor' ||
+        docker run --rm --runtime runsc --network none "$SAKALA_CADDY_IMAGE" dmesg 2> /dev/null | grep 'Starting gVisor' > /dev/null ||
             die "A container under runsc did not start. Check: journalctl -u docker -n 50"
         info "A test container started under gVisor."
     fi
@@ -368,7 +371,7 @@ prepare_host() {
     [ -e "$placeholder" ] || install -m 0644 -o sakala-agent -g sakala-agent /dev/stdin "$placeholder" <<< \
         '# Keeps the route import glob valid before the agent writes the first route.'
 
-    if command -v ufw > /dev/null && ufw status 2> /dev/null | grep -q '^Status: active'; then
+    if command -v ufw > /dev/null && ufw status 2> /dev/null | grep '^Status: active' > /dev/null; then
         ufw allow 80/tcp > /dev/null
         ufw allow 443/tcp > /dev/null
         ufw allow 443/udp > /dev/null
@@ -500,8 +503,8 @@ EOF
 ports_free_or_ours() {
     local port
     for port in 80 443; do
-        if ss -ltnH "sport = :$port" 2> /dev/null | grep -q .; then
-            if is_dry_run || compose ps --status running --services 2> /dev/null | grep -qx edge; then
+        if ss -ltnH "sport = :$port" 2> /dev/null | grep . > /dev/null; then
+            if is_dry_run || compose ps --status running --services 2> /dev/null | grep -x edge > /dev/null; then
                 continue
             fi
             die "Port $port is already in use: $(ss -ltnpH "sport = :$port" | head -n 1). Stop that service first."
@@ -540,7 +543,7 @@ start_stack() {
 
     # Console v0.4.0 and older ignore the PUBLIC_* environment and would send
     # browsers to the hosted API. Everything else still installs.
-    if ! is_dry_run && ! curl -fsS --max-time 5 http://127.0.0.1:8101/runtime-config.js | grep -qF "\"https://api.$domain\""; then
+    if ! is_dry_run && ! curl -fsS --max-time 5 http://127.0.0.1:8101/runtime-config.js | grep -F "\"https://api.$domain\"" > /dev/null; then
         console_ok=0
         warn "The pinned Console ($SAKALA_CONSOLE_VERSION) cannot be pointed at api.$domain when it starts."
     fi
