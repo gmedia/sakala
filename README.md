@@ -14,6 +14,7 @@ Untuk kampus, komunitas, atau tim kecil yang ingin menjalankan Sakala sendiri di
 
 - Server baru Ubuntu 24.04 atau 26.04, x86_64, minimal 2 vCPU dan 4 GB RAM, disk 40 GB atau lebih. VM biasa cukup; gVisor memakai platform `systrap` dan tidak butuh nested virtualization.
 - Akses root, port 80 dan 443 terbuka dari internet.
+- Docker boleh belum ada. Kalau sudah ada (paket `docker-ce`, `docker.io` Ubuntu, atau `moby-engine`), installer memakainya selama daemon-nya rootful, Docker Engine minimal 24.0, plugin Compose minimal 2.24, dan buildx terpasang. Kalau tidak memenuhi, atau Docker terpasang sebagai snap, installer berhenti dan menyebut yang kurang. Installer tidak pernah mengganti atau menghapus Docker yang tidak dipasangnya sendiri.
 - Domain yang kamu kelola, misalnya `sakala.example.com`, dengan tiga record DNS ke IP server:
 
   | Record | Untuk |
@@ -33,7 +34,7 @@ Untuk kampus, komunitas, atau tim kecil yang ingin menjalankan Sakala sendiri di
 
 | Komponen | Bentuk |
 | --- | --- |
-| Docker Engine (rootful) | paket dari download.docker.com, atau paket Ubuntu kalau rilisnya belum tersedia di sana |
+| Docker Engine (rootful) | paket dari download.docker.com, atau paket Ubuntu kalau rilisnya belum tersedia di sana; Docker yang sudah ada dipakai kalau memenuhi syarat di atas. `/etc/docker/daemon.json` yang sudah ada dipertahankan; installer hanya menambahkan `default-address-pools` (dan `log-driver: local` kalau belum diatur), menyimpan salinan `.bak-<waktu>`, lalu me-restart Docker |
 | gVisor (`runsc`) | rilis yang dipin, dicek dengan `.sha512` rilis dan pin di `versions.env` |
 | PostgreSQL, Valkey, RustFS | container, data di Docker volume |
 | API, worker queue, scheduler, Reverb, Console | container dari `ghcr.io/gmedia`, dipin dengan digest |
@@ -81,7 +82,7 @@ Defaultnya, setiap project mendapat sertifikat sendiri saat pertama kali dibuka,
 sudo SAKALA_DNS_API_TOKEN=... ./install.sh --tls dns --dns-provider cloudflare
 ```
 
-Perbandingan, cara kerjanya, dan endpoint yang sebaiknya ditambahkan di API ada di [docs/tls.md](docs/tls.md).
+Perbandingan, cara kerjanya, dan endpoint yang sebaiknya ditambahkan di API ada di [docs/tls.md](docs/tls.md). Di sana juga ada mode `--tls internal`, yang memakai CA lokal Caddy untuk tes dan jaringan privat. Mode itu tidak untuk instalasi publik.
 
 ## Upgrade
 
@@ -157,6 +158,7 @@ Log semua komponen: `sudo sakala-compose logs --tail 100`.
 ## Batasan saat ini
 
 - **Console.** Pin Console masih v0.4.0, yang menanam alamat API hosted saat build. Installer tetap selesai, tapi berhenti dengan peringatan (exit 3) sampai pin dipindah ke rilis Console yang membaca konfigurasi saat container start ([sakala-console#98](https://github.com/gmedia/sakala-console/pull/98)).
+- **Agent hanya men-deploy ke domain Sakala hosted.** Sakala Agent v0.5.0 menolak project yang domainnya bukan `*.run.sakala.localhost`, `*.run.staging.sakala.dev`, atau `*.run.sakala.dev` (daftar tetap di `sakala-agent`, fungsi `valid_domain`). Jadi di domainmu sendiri, instalasi, login, dan inspeksi berjalan, tetapi setiap deploy gagal dengan `invalid_runtime_command` sampai pin agent dipindah ke rilis tanpa daftar itu. Tes end-to-end memakai `sakala.localhost` karena alasan ini.
 - **Satu server.** Control plane dan aplikasi pengguna berbagi kernel host. gVisor menjadi batas utamanya, tapi akun agent punya akses Docker, yang setara root. Untuk aplikasi dari orang yang tidak kamu kenal, pemisahan host seperti di Sakala hosted lebih aman.
 - **Belum diuji penuh.** Belum ada instalasi lengkap di VM bersih, upgrade antar-rilis, atau restore di server sungguhan.
 - **Hanya x86_64**, Ubuntu 24.04 dan 26.04.
@@ -174,6 +176,8 @@ tests/edge-tls.sh         # edge Caddy sungguhan, CA internal, tanpa ACME
 tests/dry-run.sh          # install, upgrade, uninstall di container Ubuntu (butuh internet)
 ```
 
+GitHub Actions menjalankan semua perintah di atas di setiap pull request (`.github/workflows/lint.yml`). `.github/workflows/install-e2e.yml` memasang Sakala sungguhan di VM `ubuntu-24.04` baru milik GitHub dengan `tests/install-e2e.sh`: `install.sh --tls internal`, cek semua service, API dan Console lewat HTTPS, agent siap dengan `runsc`, login sebagai admin, deploy `examples/static-app` dari [sakala-infra](https://github.com/gmedia/sakala-infra) lewat API, lalu `upgrade.sh` dan `uninstall.sh`. Workflow ini jalan di pull request yang menyentuh installer, setiap minggu, dan manual lewat `workflow_dispatch`. Jangan jalankan `tests/install-e2e.sh` di server yang ingin kamu pertahankan; script itu mengubah seluruh mesin.
+
 Lisensi: Apache-2.0.
 
 ---
@@ -188,6 +192,8 @@ This repository installs Sakala on your own server. It is the distribution, not 
 
 **Requirements.** A fresh Ubuntu 24.04 or 26.04 x86_64 server with at least 2 vCPU, 4 GB RAM, and 40 GB disk; root access; ports 80 and 443 open; a domain you control with `app.`, `api.`, and `*.run.` records pointing at the server; and an age key pair made on your own computer (`age-keygen`), whose public key you give to the installer.
 
+**Existing Docker.** If Docker is already installed (`docker-ce`, Ubuntu's `docker.io`, or `moby-engine`), the installer reuses it when the daemon is rootful, Docker Engine is 24.0 or newer, the Compose plugin is 2.24 or newer, and buildx is present. Otherwise, or for a snap install, it stops and names what is missing; it never replaces or removes a Docker Engine it did not install. An existing `/etc/docker/daemon.json` keeps its settings: the installer only adds `default-address-pools` (and `log-driver: local` when unset), keeps a `.bak-<time>` copy, and restarts Docker.
+
 **What gets installed.** Docker Engine (rootful), gVisor (checksum-verified), PostgreSQL, Valkey, RustFS, the Sakala API, workers, Reverb, and Console (pinned by digest), a runtime router and a public Caddy edge with automatic HTTPS, the Sakala Agent binary (verified against the release `SHA256SUMS` and the pin), and a daily encrypted backup timer. Every deployed app runs under gVisor on its own Docker network.
 
 **Install.**
@@ -200,7 +206,7 @@ sudo ./install.sh --domain sakala.example.com --email admin@example.com --age-re
 
 It is idempotent: rerunning keeps the generated secrets, the agent credentials, and your own settings. It prints the URLs and the first admin password at the end. Mail, GitHub App, and Google login are set in `/etc/sakala/secrets/api.local.env` ([docs/configuration.md](docs/configuration.md)).
 
-**TLS for projects.** By default each project hostname gets its own certificate on first visit, and only once the agent has written a route for it, so it works with any DNS provider. `--tls dns --dns-provider cloudflare` uses one wildcard certificate instead. See [docs/tls.md](docs/tls.md), which also specifies the endpoint `sakala-api` should add so Caddy can ask the API directly.
+**TLS for projects.** By default each project hostname gets its own certificate on first visit, and only once the agent has written a route for it, so it works with any DNS provider. `--tls dns --dns-provider cloudflare` uses one wildcard certificate instead. `--tls internal` uses Caddy's local CA, for tests and private networks only, never for a public instance. See [docs/tls.md](docs/tls.md), which also specifies the endpoint `sakala-api` should add so Caddy can ask the API directly.
 
 **Upgrade.** Check out a newer tag, then `sudo ./upgrade.sh`. It backs up first and stops if the backup fails, then pulls the new pins, migrates, and restarts what changed.
 
@@ -210,6 +216,6 @@ It is idempotent: rerunning keeps the generated secrets, the agent credentials, 
 
 **Troubleshooting.** `sudo sakala-compose logs edge` for certificates, `journalctl -u sakala-agent` for deployments, `sudo /opt/sakala/scripts/backup.sh --check` for backups. The table above lists the common cases.
 
-**Current limits.** Console v0.4.0 is pinned until a release with runtime configuration ships ([sakala-console#98](https://github.com/gmedia/sakala-console/pull/98)); the installer finishes but exits 3 with a warning until then. One server means the control plane and user apps share a kernel, with gVisor as the main boundary. Not yet tested end to end on a clean VM. x86_64 only. DNS mode has a pinned module for Cloudflare only. No monitoring. Changing the domain after install is not supported. The Sakala landing page is not part of self-host.
+**Current limits.** Console v0.4.0 is pinned until a release with runtime configuration ships ([sakala-console#98](https://github.com/gmedia/sakala-console/pull/98)); the installer finishes but exits 3 with a warning until then. Sakala Agent v0.5.0 deploys only projects under `*.run.sakala.localhost`, `*.run.staging.sakala.dev`, or `*.run.sakala.dev` (a fixed list in `sakala-agent`), so on your own domain every deployment fails with `invalid_runtime_command` until the agent pin moves to a release without that list; the end-to-end test uses `sakala.localhost` for this reason. One server means the control plane and user apps share a kernel, with gVisor as the main boundary. Not yet tested end to end on a clean VM. x86_64 only. DNS mode has a pinned module for Cloudflare only. No monitoring. Changing the domain after install is not supported. The Sakala landing page is not part of self-host.
 
 License: Apache-2.0.
