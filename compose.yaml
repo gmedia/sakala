@@ -1,0 +1,278 @@
+# Sakala on one server: the control plane, the runtime router, and the public
+# edge. Deployed projects are not in this file; the Sakala Agent (a host binary
+# under systemd) starts them under gVisor.
+#
+# install.sh and upgrade.sh run it as:
+#   docker compose --project-directory /opt/sakala -f compose.yaml \
+#     --env-file /etc/sakala/sakala.env --env-file versions.env ...
+#
+# Only the edge publishes public ports (80 and 443). The API and Console also
+# listen on loopback for the health checks and the agent; nothing else leaves
+# the Docker networks.
+name: sakala
+
+x-hardening: &hardening
+  restart: unless-stopped
+  security_opt:
+    - no-new-privileges:true
+  logging:
+    driver: local
+    options:
+      max-size: 10m
+      max-file: "3"
+
+x-api-env: &api-env
+  env_file:
+    - path: ${SAKALA_SECRETS_DIR:-/etc/sakala/secrets}/api.env
+    # Operator overrides (SMTP, GitHub App, Google login). Never rewritten by the scripts.
+    - path: ${SAKALA_SECRETS_DIR:-/etc/sakala/secrets}/api.local.env
+      required: false
+
+services:
+  postgres:
+    <<: *hardening
+    image: ${SAKALA_POSTGRES_IMAGE:?pin SAKALA_POSTGRES_IMAGE in versions.env}
+    env_file:
+      - ${SAKALA_SECRETS_DIR:-/etc/sakala/secrets}/database.env
+    volumes:
+      - sakala-postgres:/var/lib/postgresql/data
+    networks:
+      - sakala-internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready --username=$$POSTGRES_USER --dbname=$$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # Valkey, protocol-compatible with Redis; the API's `redis` driver talks to it.
+  valkey:
+    <<: *hardening
+    image: ${SAKALA_VALKEY_IMAGE:?pin SAKALA_VALKEY_IMAGE in versions.env}
+    command: ["valkey-server", "--appendonly", "yes"]
+    volumes:
+      - sakala-valkey:/data
+    networks:
+      - sakala-internal
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+  # S3-compatible storage for avatars. Browsers read them through the edge at
+  # https://api.<domain>/storage/... (GET and HEAD only).
+  rustfs:
+    <<: *hardening
+    image: ${SAKALA_STORAGE_IMAGE:?pin SAKALA_STORAGE_IMAGE in versions.env}
+    env_file:
+      - ${SAKALA_SECRETS_DIR:-/etc/sakala/secrets}/storage.env
+    environment:
+      RUSTFS_VOLUMES: /data
+      RUSTFS_ADDRESS: 0.0.0.0:9000
+      RUSTFS_CONSOLE_ENABLE: "false"
+      RUSTFS_LOG_LEVEL: warn
+    volumes:
+      - sakala-rustfs:/data
+    networks:
+      - sakala-internal
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:9000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  api:
+    <<: [*hardening, *api-env]
+    image: ${SAKALA_API_IMAGE:?pin SAKALA_API_IMAGE in versions.env}
+    volumes:
+      # Empty until a GitHub App is configured; see docs/configuration.md.
+      - ${SAKALA_SECRETS_DIR:-/etc/sakala/secrets}/github-app.pem:/run/secrets/github-app-private-key.pem:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+      rustfs:
+        condition: service_healthy
+    networks:
+      - sakala-internal
+
+  api-web:
+    <<: *hardening
+    image: ${SAKALA_API_WEB_IMAGE:?pin SAKALA_API_WEB_IMAGE in versions.env}
+    depends_on:
+      api:
+        condition: service_started
+    ports:
+      # The agent and the health checks use this; the public path is the edge.
+      - "127.0.0.1:${SAKALA_API_LOOPBACK_PORT:-8100}:8080"
+    networks:
+      - sakala-internal
+
+  reverb:
+    <<: [*hardening, *api-env]
+    image: ${SAKALA_API_IMAGE:?pin SAKALA_API_IMAGE in versions.env}
+    command: ["php", "artisan", "reverb:start", "--host=0.0.0.0", "--port=8080", "--no-interaction"]
+    networks:
+      - sakala-internal
+    healthcheck:
+      test: ["CMD", "php", "-r", "exit(@fsockopen('127.0.0.1', 8080) ? 0 : 1);"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    stop_grace_period: 30s
+
+  queue:
+    <<: [*hardening, *api-env]
+    image: ${SAKALA_API_IMAGE:?pin SAKALA_API_IMAGE in versions.env}
+    command:
+      - php
+      - artisan
+      - queue:work
+      - database
+      - --queue=default
+      - --sleep=3
+      - --tries=3
+      - --timeout=120
+      - --memory=128
+      - --max-jobs=1000
+      - --max-time=3600
+      - --no-interaction
+    depends_on:
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+      reverb:
+        condition: service_healthy
+    networks:
+      - sakala-internal
+    stop_grace_period: 30s
+
+  # Exactly one instance: its mutexes live in Valkey. It expires agent command
+  # leases and marks silent nodes offline every minute.
+  scheduler:
+    <<: [*hardening, *api-env]
+    image: ${SAKALA_API_IMAGE:?pin SAKALA_API_IMAGE in versions.env}
+    command: ["php", "artisan", "schedule:work", "--no-interaction"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+    networks:
+      - sakala-internal
+    stop_grace_period: 30s
+
+  # The published image is pointed at this installation when it starts, from
+  # console.env (public values only, rendered by the installer).
+  console:
+    <<: *hardening
+    image: ${SAKALA_CONSOLE_IMAGE:?pin SAKALA_CONSOLE_IMAGE in versions.env}
+    env_file:
+      - ${SAKALA_CONFIG_DIR:-/etc/sakala}/console.env
+    ports:
+      - "127.0.0.1:${SAKALA_CONSOLE_LOOPBACK_PORT:-8101}:8080"
+    networks:
+      - sakala-internal
+
+  # The router the agent writes one route file per project into. It never holds
+  # TLS or the Docker socket; the agent connects it to each project's network.
+  runtime-caddy:
+    <<: *hardening
+    image: ${SAKALA_CADDY_IMAGE:?pin SAKALA_CADDY_IMAGE in versions.env}
+    container_name: sakala-caddy
+    volumes:
+      - ./caddy/runtime.Caddyfile:/etc/caddy/Caddyfile:ro
+      - ${SAKALA_STATE_DIR:-/var/lib/sakala}/caddy/sites:/etc/caddy/sites:ro
+    networks:
+      - sakala-runtime
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:80/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  # The public edge: automatic HTTPS for app.<domain> and api.<domain>, and for
+  # <project>.run.<domain> either on demand or with a wildcard (docs/tls.md).
+  edge:
+    <<: *hardening
+    image: ${SAKALA_EDGE_IMAGE:-${SAKALA_CADDY_IMAGE:?pin SAKALA_CADDY_IMAGE in versions.env}}
+    environment:
+      SAKALA_DOMAIN: ${SAKALA_DOMAIN:?set SAKALA_DOMAIN in /etc/sakala/sakala.env}
+      SAKALA_ADMIN_EMAIL: ${SAKALA_ADMIN_EMAIL:?set SAKALA_ADMIN_EMAIL in /etc/sakala/sakala.env}
+      SAKALA_ACME_CA: ${SAKALA_ACME_CA:-https://acme-v02.api.letsencrypt.org/directory}
+    env_file:
+      # Only in DNS mode: the DNS provider token, kept out of every other service.
+      - path: ${SAKALA_SECRETS_DIR:-/etc/sakala/secrets}/dns.env
+        required: false
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./caddy/edge.Caddyfile:/etc/caddy/Caddyfile:ro
+      - ${SAKALA_CONFIG_DIR:-/etc/sakala}/edge:/etc/caddy/sakala:ro
+      - sakala-edge-data:/data
+      - sakala-edge-config:/config
+    depends_on:
+      api-web:
+        condition: service_started
+      console:
+        condition: service_started
+      runtime-caddy:
+        condition: service_started
+    networks:
+      - sakala-internal
+      - sakala-runtime
+
+  migrate:
+    profiles: ["operations"]
+    <<: *api-env
+    image: ${SAKALA_API_IMAGE:?pin SAKALA_API_IMAGE in versions.env}
+    command: ["php", "artisan", "migrate", "--force", "--no-interaction"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - sakala-internal
+    restart: "no"
+    security_opt:
+      - no-new-privileges:true
+
+  # Idempotent: creates the avatar bucket and its anonymous read policy.
+  storage-init:
+    profiles: ["operations"]
+    <<: *api-env
+    image: ${SAKALA_API_IMAGE:?pin SAKALA_API_IMAGE in versions.env}
+    command: ["php", "artisan", "tinker", "--no-interaction", "--execute", "require '/opt/sakala-ops/storage-init.php';"]
+    volumes:
+      - ./scripts/storage-init.php:/opt/sakala-ops/storage-init.php:ro
+    depends_on:
+      rustfs:
+        condition: service_healthy
+    networks:
+      - sakala-internal
+    restart: "no"
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  sakala-postgres:
+  sakala-valkey:
+  sakala-rustfs:
+  sakala-edge-data:
+  sakala-edge-config:
+
+networks:
+  sakala-internal:
+    name: sakala-internal
+  # Created by install.sh, because the agent expects it to exist before it starts.
+  sakala-runtime:
+    name: sakala-runtime
+    external: true

@@ -1,0 +1,6 @@
+# Written by install.sh to /etc/sakala/edge/run-tls.caddy for SAKALA_TLS_MODE=on-demand.
+# One certificate per project hostname, requested on its first visit and only
+# when the runtime router has a route for it. Works with any DNS provider.
+tls {
+	on_demand
+}
