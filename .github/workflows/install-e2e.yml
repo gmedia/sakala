@@ -37,7 +37,13 @@ concurrency:
 
 env:
   SAKALA_E2E_DISPOSABLE_HOST: 'yes'
-  E2E_DOMAIN: sakala.test
+  # TODO(gmedia/sakala-agent): Sakala Agent v0.5.0 refuses to deploy any project
+  # whose domain is not under run.sakala.localhost, run.staging.sakala.dev, or
+  # run.sakala.dev (valid_domain in crates/sakala-agent-runtime/src/executor/docker.rs),
+  # so a self-hosted domain such as sakala.test fails every deployment with
+  # invalid_runtime_command. sakala.localhost is the only one of those a test may
+  # use. Switch to sakala.test once versions.env pins an agent without that list.
+  E2E_DOMAIN: sakala.localhost
   E2E_REPOSITORY: https://github.com/gmedia/sakala-infra
   E2E_ROOT_DIRECTORY: examples/static-app
   # TODO(gmedia/sakala-console#98): the pinned Console v0.4.0 bakes the hosted API

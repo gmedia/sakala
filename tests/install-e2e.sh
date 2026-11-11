@@ -18,7 +18,8 @@
 #
 # Environment:
 #   SAKALA_E2E_DISPOSABLE_HOST=yes   required; confirms this machine may be changed
-#   E2E_DOMAIN                       default sakala.test
+#   E2E_DOMAIN                       default sakala.localhost; the pinned agent deploys
+#                                    nothing else (see .github/workflows/install-e2e.yml)
 #   E2E_CONSOLE_EXPECTED_FAIL        1 while the pinned Console cannot be pointed at this API
 #                                    (the check then must fail; it fails the run once it passes)
 #   E2E_GITHUB_TOKEN                 optional; becomes GITHUB_PUBLIC_API_TOKEN in api.local.env
@@ -28,7 +29,7 @@
 set -euo pipefail
 
 repo=$(cd "$(dirname "$0")/.." && pwd)
-domain=${E2E_DOMAIN:-sakala.test}
+domain=${E2E_DOMAIN:-sakala.localhost}
 email=${E2E_ADMIN_EMAIL:-admin@$domain}
 console_expected_fail=${E2E_CONSOLE_EXPECTED_FAIL:-0}
 repository=${E2E_REPOSITORY:-https://github.com/gmedia/sakala-infra}
@@ -145,7 +146,7 @@ phase_prepare() {
     if command -v dockerd > /dev/null; then
         note "$(dockerd --version), package $(dpkg-query -S "$(readlink -f "$(command -v dockerd)")" 2> /dev/null | cut -d: -f1 || echo unknown)"
         note "Compose $(docker compose version --short 2> /dev/null || echo missing), buildx $(docker buildx version 2> /dev/null | awk '{print $2}' || echo missing)"
-        note "daemon.json: $(tr -d '\n ' < /etc/docker/daemon.json 2> /dev/null || echo none)"
+        note "daemon.json: $([ -e /etc/docker/daemon.json ] && tr -d '\n ' < /etc/docker/daemon.json || echo none)"
     else
         note "none"
     fi
@@ -360,6 +361,11 @@ wait_deployment() {
 
 phase_deploy() {
     [ -s "$ca" ] || fetch_ca || fail "No local CA root certificate; run the verify phase first."
+    case $domain in
+        sakala.localhost | staging.sakala.dev | sakala.dev)
+            warning "Deploying under run.$domain only because Sakala Agent $(sed -n 's/^SAKALA_AGENT_VERSION=//p' "$home/versions.env") accepts no other project domain (*.run.sakala.localhost, *.run.staging.sakala.dev, *.run.sakala.dev). A self-hosted domain cannot deploy until sakala-agent drops that list."
+            ;;
+    esac
     login
 
     step "Creating a project from $repository ($root_directory)"
