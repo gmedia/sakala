@@ -2,7 +2,8 @@
 # in repository settings) and skip the cooldown; version updates below wait 7
 # days after a release so a hijacked package is usually caught before it lands.
 #
-# Dependabot reads caddy/Dockerfile.dns. The digests in versions.env and the
+# Dependabot reads caddy/Dockerfile.dns and the browser check's lockfile in
+# tests/console-browser. The digests in versions.env and the
 # agent and gVisor pins are moved by hand in a release pull request, because
 # Dependabot cannot read an env file.
 version: 2
@@ -37,3 +38,15 @@ updates:
     groups:
       github-actions-minor-patch:
         update-types: ['minor', 'patch']
+  - package-ecosystem: 'npm'
+    directory: '/tests/console-browser'
+    schedule:
+      interval: 'weekly'
+      day: 'monday'
+      time: '06:00'
+      timezone: 'Asia/Jakarta'
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: 'test(deps)'

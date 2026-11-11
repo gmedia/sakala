@@ -1,0 +1,9 @@
+{
+  "name": "sakala-install-e2e-console-browser",
+  "private": true,
+  "description": "Opens the installed Console in Chrome during tests/install-e2e.sh and checks which API it calls.",
+  "type": "module",
+  "dependencies": {
+    "playwright-core": "1.64.1"
+  }
+}
