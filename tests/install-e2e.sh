@@ -351,7 +351,10 @@ wait_deployment() {
         case $status in
             succeeded) return 0 ;;
             failed | cancelled)
-                api_json 200 GET "/api/v1/app/projects/$1/deployments/$2/logs" 2> /dev/null | jq -r '.data[]?.message? // empty' | tail -40 >&2 || true
+                # Newest first, so the end of a long build log is what comes back; kept for diagnostics.
+                api_json 200 GET "/api/v1/app/projects/$1/deployments/$2/logs?per_page=200&order=desc" |
+                    jq -r '.data | reverse | .[] | "\(.recorded_at) \(.stream) \(.message)"' > "$state/deployment-logs.log" || true
+                tail -n 60 "$state/deployment-logs.log" >&2
                 fail "Deployment $status: $(jq -c '.data.failure // {failure_code: .data.failure_code, failure_summary: .data.failure_summary}' <<< "$deployment")"
                 ;;
         esac
