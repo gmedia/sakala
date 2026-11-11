@@ -2,7 +2,7 @@
 
 Pasang dan jalankan Sakala di server sendiri. Repository ini adalah distribusi, bukan source code: installer, Compose, versi yang dipin, backup, dan dokumentasi self-host. Source tiap komponen ada di repository masing-masing ([sakala-api](https://github.com/gmedia/sakala-api), [sakala-console](https://github.com/gmedia/sakala-console), [sakala-agent](https://github.com/gmedia/sakala-agent)).
 
-> **Status: versi pertama, belum pernah dipasang penuh di VM bersih.** Script sudah lolos `shellcheck`, `docker compose config`, uji edge Caddy dengan container sungguhan, dan dry run di container Ubuntu 24.04 dan 26.04. Instalasi lengkap di server sungguhan belum dijalankan. Pin Console masih v0.4.0, yang belum bisa diarahkan ke domain lain; lihat [Batasan saat ini](#batasan-saat-ini).
+> **Status: versi pertama, terbukti terpasang di VM Ubuntu 24.04 bersih milik GitHub Actions, belum di server sungguhan.** Setiap pull request yang menyentuh installer menjalankan `install.sh`, deploy satu project di bawah gVisor, `upgrade.sh`, dan `uninstall.sh` di VM baru ([install-e2e](.github/workflows/install-e2e.yml)), dengan sertifikat dari CA lokal (`--tls internal`) karena runner tidak punya DNS publik. Yang belum terbukti: Let's Encrypt, domain selain `sakala.localhost` (agent v0.5.0 menolaknya), upgrade antar-rilis, dan restore. Pin Console masih v0.4.0, yang belum bisa diarahkan ke domain lain; lihat [Batasan saat ini](#batasan-saat-ini).
 
 English: [jump to the English section](#english).
 
@@ -160,7 +160,7 @@ Log semua komponen: `sudo sakala-compose logs --tail 100`.
 - **Console.** Pin Console masih v0.4.0, yang menanam alamat API hosted saat build. Installer tetap selesai, tapi berhenti dengan peringatan (exit 3) sampai pin dipindah ke rilis Console yang membaca konfigurasi saat container start ([sakala-console#98](https://github.com/gmedia/sakala-console/pull/98)).
 - **Agent hanya men-deploy ke domain Sakala hosted.** Sakala Agent v0.5.0 menolak project yang domainnya bukan `*.run.sakala.localhost`, `*.run.staging.sakala.dev`, atau `*.run.sakala.dev` (daftar tetap di `sakala-agent`, fungsi `valid_domain`). Jadi di domainmu sendiri, instalasi, login, dan inspeksi berjalan, tetapi setiap deploy gagal dengan `invalid_runtime_command` sampai pin agent dipindah ke rilis tanpa daftar itu. Tes end-to-end memakai `sakala.localhost` karena alasan ini.
 - **Satu server.** Control plane dan aplikasi pengguna berbagi kernel host. gVisor menjadi batas utamanya, tapi akun agent punya akses Docker, yang setara root. Untuk aplikasi dari orang yang tidak kamu kenal, pemisahan host seperti di Sakala hosted lebih aman.
-- **Belum diuji penuh.** Belum ada instalasi lengkap di VM bersih, upgrade antar-rilis, atau restore di server sungguhan.
+- **Belum diuji penuh.** Instalasi, deploy, upgrade dengan pin yang sama, dan uninstall diuji otomatis di VM GitHub Actions (`--tls internal`, domain `sakala.localhost`). Belum diuji: sertifikat Let's Encrypt, server sungguhan dengan DNS publik, upgrade antar-rilis, dan restore.
 - **Hanya x86_64**, Ubuntu 24.04 dan 26.04.
 - **Mode DNS** baru punya modul yang dipin untuk Cloudflare. Provider lain butuh `--dns-module` dan belum diuji.
 - **Tanpa monitoring.** Tidak ada yang memberi tahu kalau backup berhenti atau disk penuh. Jalankan `backup.sh --check` dari monitoring yang kamu punya.
@@ -186,7 +186,7 @@ Lisensi: Apache-2.0.
 
 This repository installs Sakala on your own server. It is the distribution, not the source: installer, Compose files, pinned versions, backups, and self-host docs.
 
-> **Status: first version, never run end to end on a clean VM.** The scripts pass `shellcheck`, `docker compose config`, an edge test with real Caddy containers, and a dry run in Ubuntu 24.04 and 26.04 containers. A full install on a real server has not been run yet, and the pinned Console (v0.4.0) cannot be pointed at another domain yet.
+> **Status: first version, proven to install on a clean GitHub Actions Ubuntu 24.04 VM, not yet on a real server.** Every pull request that touches the installer runs `install.sh`, deploys a project under gVisor, and runs `upgrade.sh` and `uninstall.sh` on a fresh VM ([install-e2e](.github/workflows/install-e2e.yml)), with certificates from a local CA (`--tls internal`) because the runner has no public DNS. Not yet proven: Let's Encrypt, domains other than `sakala.localhost` (agent v0.5.0 refuses them), upgrades between releases, and restore. The pinned Console (v0.4.0) cannot be pointed at another domain yet.
 
 **Who it is for.** Universities, communities, or small teams that want to run Sakala on one server, so people can deploy apps from GitHub to `https://<name>.run.<domain>`.
 
@@ -216,6 +216,6 @@ It is idempotent: rerunning keeps the generated secrets, the agent credentials, 
 
 **Troubleshooting.** `sudo sakala-compose logs edge` for certificates, `journalctl -u sakala-agent` for deployments, `sudo /opt/sakala/scripts/backup.sh --check` for backups. The table above lists the common cases.
 
-**Current limits.** Console v0.4.0 is pinned until a release with runtime configuration ships ([sakala-console#98](https://github.com/gmedia/sakala-console/pull/98)); the installer finishes but exits 3 with a warning until then. Sakala Agent v0.5.0 deploys only projects under `*.run.sakala.localhost`, `*.run.staging.sakala.dev`, or `*.run.sakala.dev` (a fixed list in `sakala-agent`), so on your own domain every deployment fails with `invalid_runtime_command` until the agent pin moves to a release without that list; the end-to-end test uses `sakala.localhost` for this reason. One server means the control plane and user apps share a kernel, with gVisor as the main boundary. Not yet tested end to end on a clean VM. x86_64 only. DNS mode has a pinned module for Cloudflare only. No monitoring. Changing the domain after install is not supported. The Sakala landing page is not part of self-host.
+**Current limits.** Console v0.4.0 is pinned until a release with runtime configuration ships ([sakala-console#98](https://github.com/gmedia/sakala-console/pull/98)); the installer finishes but exits 3 with a warning until then. Sakala Agent v0.5.0 deploys only projects under `*.run.sakala.localhost`, `*.run.staging.sakala.dev`, or `*.run.sakala.dev` (a fixed list in `sakala-agent`), so on your own domain every deployment fails with `invalid_runtime_command` until the agent pin moves to a release without that list; the end-to-end test uses `sakala.localhost` for this reason. One server means the control plane and user apps share a kernel, with gVisor as the main boundary. Let's Encrypt issuance, a real server with public DNS, upgrades between releases, and restore are not tested yet. x86_64 only. DNS mode has a pinned module for Cloudflare only. No monitoring. Changing the domain after install is not supported. The Sakala landing page is not part of self-host.
 
 License: Apache-2.0.
