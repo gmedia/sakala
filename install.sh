@@ -279,6 +279,10 @@ JSON
     live systemctl enable --now docker
 }
 
+# What the daemon reports, as clients such as buildx read it.
+address_pools() { docker info --format '{{json .DefaultAddressPools}}' 2> /dev/null; }
+address_pools_ok() { ! address_pools | grep -qi 'invalid'; }
+
 # Checked against the release's .sha512 and against the pin in versions.env.
 install_gvisor() {
     step "Installing gVisor $SAKALA_GVISOR_RELEASE"
@@ -327,6 +331,14 @@ install_gvisor() {
         done
         docker info --format '{{json .Runtimes}}' | grep -q '"runsc"' ||
             die "Docker did not load runsc. Check: journalctl -u docker -n 50"
+        # buildx refuses to build when the daemon reports an address pool it cannot
+        # parse, which a reload can leave behind on some Engine versions.
+        if ! address_pools_ok; then
+            warn "After the reload Docker reports its address pools as $(address_pools); restarting Docker."
+            systemctl restart docker
+            address_pools_ok || die "Docker reports its address pools as $(address_pools) even after a restart, so builds fail. Check /etc/docker/daemon.json."
+        fi
+        info "Docker address pools: $(address_pools)."
         docker run --rm --runtime runsc --network none "$SAKALA_CADDY_IMAGE" dmesg 2> /dev/null | grep -q 'Starting gVisor' ||
             die "A container under runsc did not start. Check: journalctl -u docker -n 50"
         info "A test container started under gVisor."
