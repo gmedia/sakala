@@ -9,7 +9,8 @@
 # Usage: sudo -E tests/install-e2e.sh <phase>
 #   prepare      copy this checkout to /opt/sakala, add /etc/hosts entries, make an age key
 #   install      install.sh --tls internal, non-interactive
-#   verify       services healthy, API and Console over HTTPS, agent ready, runsc registered
+#   verify       services healthy, API and Console over HTTPS, the Console in a browser calls
+#                this API, agent ready with run.<domain> as its project domain, runsc registered
 #   deploy       log in as the generated admin, create a project from a public repository,
 #                wait for inspection and deployment, fetch https://<slug>.run.<domain>/
 #   upgrade      upgrade.sh with the same pins: backup taken, secrets kept, everything still up
@@ -18,10 +19,8 @@
 #
 # Environment:
 #   SAKALA_E2E_DISPOSABLE_HOST=yes   required; confirms this machine may be changed
-#   E2E_DOMAIN                       default sakala.localhost; the pinned agent deploys
-#                                    nothing else (see .github/workflows/install-e2e.yml)
-#   E2E_CONSOLE_EXPECTED_FAIL        1 while the pinned Console cannot be pointed at this API
-#                                    (the check then must fail; it fails the run once it passes)
+#   E2E_DOMAIN                       default sakala.test, through /etc/hosts; never a hosted
+#                                    Sakala domain, so the test proves a self-hosted one works
 #   E2E_GITHUB_TOKEN                 optional; becomes GITHUB_PUBLIC_API_TOKEN in api.local.env
 #   E2E_REPOSITORY, E2E_BRANCH, E2E_ROOT_DIRECTORY   the project to deploy
 #   E2E_CONTAINER_RUNTIME            the runtime the deployed container must use, default runsc
@@ -29,9 +28,8 @@
 set -euo pipefail
 
 repo=$(cd "$(dirname "$0")/.." && pwd)
-domain=${E2E_DOMAIN:-sakala.localhost}
+domain=${E2E_DOMAIN:-sakala.test}
 email=${E2E_ADMIN_EMAIL:-admin@$domain}
-console_expected_fail=${E2E_CONSOLE_EXPECTED_FAIL:-0}
 repository=${E2E_REPOSITORY:-https://github.com/gmedia/sakala-infra}
 branch=${E2E_BRANCH:-main}
 root_directory=${E2E_ROOT_DIRECTORY:-examples/static-app}
@@ -50,8 +48,6 @@ fail() {
     printf '::error::%s\n' "$*" >&2
     exit 1
 }
-# A GitHub Actions annotation outside Actions is just a line of text.
-warning() { printf '::warning::%s\n' "$*"; }
 
 [ "$(id -u)" -eq 0 ] || fail "Run as root: sudo -E $0 $*"
 [ "${SAKALA_E2E_DISPOSABLE_HOST:-}" = yes ] ||
@@ -75,22 +71,13 @@ retry() {
 https_status() { curl -sS -o /dev/null -w '%{http_code}' --max-time 20 --cacert "$ca" "$1" 2> /dev/null || true; }
 https_ok() { [ "$(https_status "$1")" = 200 ]; }
 
-# Runs a script and accepts exit 3 only while the Console is expected to fail.
+# Runs a script, keeps its output in $state/<name>.log, and requires exit 0.
 run_script() {
     local name=$1 log="$state/$1.log" status=0
     shift
     "$@" 2>&1 | tee "$log" || status=${PIPESTATUS[0]}
-    case $status in
-        0) pass "$name exited 0" ;;
-        3)
-            if [ "$console_expected_fail" = 1 ] && grep -q 'cannot be pointed at api' "$log"; then
-                warning "$name exited 3: the pinned Console cannot be pointed at api.$domain (expected while E2E_CONSOLE_EXPECTED_FAIL=1)."
-            else
-                fail "$name exited 3 (Console warning) but E2E_CONSOLE_EXPECTED_FAIL is not 1."
-            fi
-            ;;
-        *) fail "$name exited $status." ;;
-    esac
+    [ "$status" -eq 0 ] || fail "$name exited $status."
+    pass "$name exited 0"
 }
 
 remember_secrets() {
@@ -108,6 +95,12 @@ remember_secrets() {
 }
 
 phase_prepare() {
+    case $domain in
+        sakala.localhost | *.sakala.localhost | sakala.dev | *.sakala.dev)
+            fail "E2E_DOMAIN=$domain is a hosted Sakala domain, which the agent accepts without SAKALA_PROJECT_DOMAIN_SUFFIXES. Use a self-hosted one such as sakala.test."
+            ;;
+    esac
+
     step "Copying the checkout to $home"
     if [ "$repo" != "$home" ]; then
         # The backup unit has ProtectHome=true, so the installation cannot live under /home.
@@ -119,7 +112,6 @@ phase_prepare() {
 
     step "Pointing app.$domain and api.$domain at 127.0.0.1"
     grep -q " api.$domain\$" /etc/hosts || printf '127.0.0.1 app.%s api.%s\n' "$domain" "$domain" >> /etc/hosts
-    # *.localhost names may also resolve to ::1 first; 127.0.0.1 must be among the answers.
     getent ahostsv4 "api.$domain" | grep '^127.0.0.1 ' > /dev/null || fail "api.$domain does not resolve to 127.0.0.1"
     pass "/etc/hosts has app.$domain and api.$domain"
 
@@ -209,18 +201,66 @@ check_https() {
 
 check_console_config() {
     step "The Console is configured for https://api.$domain"
-    local config
+    local config reverb_key name value headers csp
     config=$(curl -sS --max-time 20 --cacert "$ca" "https://app.$domain/runtime-config.js" 2> /dev/null || true)
-    if grep -qF "\"https://api.$domain\"" <<< "$config"; then
-        if [ "$console_expected_fail" = 1 ]; then
-            fail "The Console now points at https://api.$domain. Set E2E_CONSOLE_EXPECTED_FAIL to 0 in .github/workflows/install-e2e.yml and remove its TODO."
-        fi
-        pass "runtime-config.js names https://api.$domain"
-    elif [ "$console_expected_fail" = 1 ]; then
-        warning "EXPECTED FAILURE: the pinned Console does not point at https://api.$domain (runtime-config.js: $(head -c 120 <<< "${config:-<empty>}" | tr '\n' ' ')). TODO(gmedia/sakala-console#98): move the Console pin, then set E2E_CONSOLE_EXPECTED_FAIL=0."
-    else
-        fail "The Console does not point at https://api.$domain; runtime-config.js: $(head -c 200 <<< "${config:-<empty>}")"
+    reverb_key=$(sed -n 's/^SAKALA_REVERB_APP_KEY=//p' /etc/sakala/secrets/generated.env)
+    while read -r name value; do
+        grep -qF "\"$name\":\"$value\"" <<< "$config" ||
+            fail "runtime-config.js lacks $name=$value: $(head -c 300 <<< "${config:-<empty>}" | sed "s/$reverb_key/[reverb key]/g")"
+    done << EOF
+PUBLIC_API_URL https://api.$domain
+PUBLIC_APP_URL https://app.$domain
+PUBLIC_REVERB_HOST api.$domain
+PUBLIC_REVERB_PORT 443
+PUBLIC_REVERB_SCHEME https
+PUBLIC_REVERB_KEY $reverb_key
+EOF
+    pass "runtime-config.js names https://api.$domain, https://app.$domain, and Reverb at wss://api.$domain:443"
+    grep -qi 'sakala\.dev' <<< "$config" && fail "runtime-config.js still names a hosted Sakala domain: $config"
+
+    headers=$(curl -sS -D - -o /dev/null --max-time 20 --cacert "$ca" "https://app.$domain/" 2> /dev/null || true)
+    csp=$(grep -i '^content-security-policy:' <<< "$headers" | tr -d '\r')
+    [[ $csp == *"connect-src"*"https://api.$domain"* ]] || fail "The Console's Content-Security-Policy does not allow https://api.$domain: ${csp:-<none>}"
+    [[ $csp == *"wss://api.$domain"* ]] || fail "The Console's Content-Security-Policy does not allow wss://api.$domain: $csp"
+    [[ $csp != *"sakala.dev"* ]] || fail "The Console's Content-Security-Policy still names a hosted Sakala domain: $csp"
+    pass "Content-Security-Policy allows https://api.$domain and wss://api.$domain only"
+
+    check_console_browser
+}
+
+# Chrome trusts the edge's local CA through an NSS database in a home of its own,
+# so a certificate error fails the check instead of being ignored.
+prepare_browser() {
+    local dir="$state/console-browser" nssdb="$state/browser-home/.pki/nssdb"
+    command -v node > /dev/null || fail "Node.js is needed for the browser check."
+    if ! command -v certutil > /dev/null; then
+        apt-get update -q && DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends libnss3-tools > /dev/null
     fi
+    if [ ! -d "$dir/node_modules/playwright-core" ]; then
+        install -d -m 0700 "$dir"
+        cp "$repo/tests/console-browser/package.json" "$repo/tests/console-browser/package-lock.json" \
+            "$repo/tests/console-browser/check.mjs" "$dir/"
+        (cd "$dir" && npm ci --ignore-scripts --no-audit --no-fund --loglevel=error) || fail "npm ci for the browser check failed."
+    fi
+    if command -v google-chrome > /dev/null; then
+        browser_channel=chrome
+    else
+        browser_channel=
+        HOME="$state/browser-home" node "$dir/node_modules/playwright-core/cli.js" install --with-deps chromium > /dev/null ||
+            fail "Neither Google Chrome nor Playwright's Chromium is available."
+    fi
+    rm -rf "$nssdb"
+    install -d -m 0700 "$nssdb"
+    certutil -d "sql:$nssdb" -N --empty-password
+    certutil -d "sql:$nssdb" -A -t 'C,,' -n sakala-e2e-local-ca -i "$ca"
+}
+
+check_console_browser() {
+    step "The Console in a browser calls https://api.$domain"
+    prepare_browser
+    HOME="$state/browser-home" APP_ORIGIN="https://app.$domain" API_ORIGIN="https://api.$domain" \
+        CHROME_CHANNEL="$browser_channel" node "$state/console-browser/check.mjs" ||
+        fail "The Console in a browser does not call https://api.$domain; see the lines above."
 }
 
 agent_status() {
@@ -254,6 +294,13 @@ check_agent() {
     docker info --format '{{json .Runtimes}}' | grep '"runsc"' > /dev/null || fail "runsc is not registered with Docker."
     grep -qx 'SAKALA_CONTAINER_RUNTIME=runsc' /etc/sakala/agent.env || fail "agent.env does not select runsc."
     pass "runsc registered with Docker and selected in agent.env ($(/usr/local/bin/runsc --version | head -n 1))"
+    grep -qx "SAKALA_PROJECT_DOMAIN_SUFFIXES=run.$domain" /etc/sakala/agent.env ||
+        fail "agent.env does not set SAKALA_PROJECT_DOMAIN_SUFFIXES=run.$domain."
+    grep -qx "SAKALA_PROJECT_DEFAULT_DOMAIN=run.$domain" /etc/sakala/secrets/api.env ||
+        fail "api.env does not set SAKALA_PROJECT_DEFAULT_DOMAIN=run.$domain."
+    journalctl -u sakala-agent.service --no-pager | grep -F "one label under run.$domain (" > /dev/null ||
+        fail "The agent's preflight does not report run.$domain as its project domain: $(journalctl -u sakala-agent.service --no-pager | grep -F project-domains | tail -n 1)"
+    pass "the agent accepts project domains under run.$domain, the API's default project domain"
 }
 
 phase_verify() {
@@ -365,11 +412,6 @@ wait_deployment() {
 
 phase_deploy() {
     [ -s "$ca" ] || fetch_ca || fail "No local CA root certificate; run the verify phase first."
-    case $domain in
-        sakala.localhost | staging.sakala.dev | sakala.dev)
-            warning "Deploying under run.$domain only because Sakala Agent $(sed -n 's/^SAKALA_AGENT_VERSION=//p' "$home/versions.env") accepts no other project domain (*.run.sakala.localhost, *.run.staging.sakala.dev, *.run.sakala.dev). A self-hosted domain cannot deploy until sakala-agent drops that list."
-            ;;
-    esac
     login
 
     step "Creating a project from $repository ($root_directory)"
@@ -453,6 +495,7 @@ phase_upgrade() {
 
     check_services
     check_https
+    check_console_config
     check_agent
     retry 30 2 https_ok "https://$host/" || fail "https://$host/ answered $(https_status "https://$host/") after the upgrade, expected 200"
     pass "https://$host/ still 200 after the upgrade"

@@ -5,7 +5,10 @@
 #
 # The runner has no public DNS name, so the installer runs with --tls internal
 # (Caddy's local CA, documented as tests and private networks only), and the test
-# trusts that CA explicitly instead of skipping certificate checks.
+# trusts that CA explicitly instead of skipping certificate checks, in curl and in
+# the browser that opens the Console. The domain is a self-hosted one, sakala.test
+# through /etc/hosts, so the Console must call api.sakala.test and the agent must
+# accept projects under run.sakala.test.
 name: Install end to end
 
 on:
@@ -22,6 +25,7 @@ on:
       - systemd/**
       - scripts/**
       - tests/install-e2e.sh
+      - tests/console-browser/**
       - .github/workflows/install-e2e.yml
   workflow_dispatch:
   schedule:
@@ -37,22 +41,9 @@ concurrency:
 
 env:
   SAKALA_E2E_DISPOSABLE_HOST: 'yes'
-  # TODO(gmedia/sakala-agent): Sakala Agent v0.5.0 refuses to deploy any project
-  # whose domain is not under run.sakala.localhost, run.staging.sakala.dev, or
-  # run.sakala.dev (valid_domain in crates/sakala-agent-runtime/src/executor/docker.rs),
-  # so a self-hosted domain such as sakala.test fails every deployment with
-  # invalid_runtime_command. sakala.localhost is the only one of those a test may
-  # use. Switch to sakala.test once versions.env pins an agent without that list.
-  E2E_DOMAIN: sakala.localhost
+  E2E_DOMAIN: sakala.test
   E2E_REPOSITORY: https://github.com/gmedia/sakala-infra
   E2E_ROOT_DIRECTORY: examples/static-app
-  # TODO(gmedia/sakala-console#98): the pinned Console v0.4.0 bakes the hosted API
-  # into its bundle, so "the Console points at https://api.sakala.test" is EXPECTED
-  # TO FAIL, and install.sh/upgrade.sh exit 3 for that reason alone. With '1' the
-  # job reports it as a warning and still fails if anything else is wrong, and it
-  # fails once the Console check starts passing. After versions.env pins the Console
-  # release with runtime configuration, set this to '0'.
-  E2E_CONSOLE_EXPECTED_FAIL: '1'
 
 jobs:
   install:

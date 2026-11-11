@@ -31,7 +31,6 @@ dns_module=${SAKALA_DNS_MODULE:-}
 assume_yes=0
 upgrade=0
 skip_resource_check=0
-console_ok=1
 edge_restart=0
 
 # Known single-token DNS modules, pinned. Any other provider works with
@@ -439,10 +438,12 @@ EOF
 
     SAKALA_DOMAIN=$domain
     SAKALA_ADMIN_EMAIL=$email
-    # Read by render through indirect expansion.
+    # Read by render through indirect expansion. SAKALA_PROJECT_DOMAIN is one value
+    # for the API's default project domain and the agent's allowed suffix.
+    export SAKALA_PROJECT_DOMAIN=run.$domain
     export SAKALA_API_LOOPBACK_PORT=8100
     export SAKALA_MAX_ACTIVE_CONTAINERS=$max_active_containers
-    local secret_vars=(SAKALA_DOMAIN SAKALA_ADMIN_EMAIL SAKALA_APP_KEY SAKALA_DB_PASSWORD SAKALA_STORAGE_ACCESS_KEY
+    local secret_vars=(SAKALA_DOMAIN SAKALA_PROJECT_DOMAIN SAKALA_ADMIN_EMAIL SAKALA_APP_KEY SAKALA_DB_PASSWORD SAKALA_STORAGE_ACCESS_KEY
         SAKALA_STORAGE_SECRET_KEY SAKALA_REVERB_APP_ID SAKALA_REVERB_APP_KEY SAKALA_REVERB_APP_SECRET)
     render "$SAKALA_HOME/templates/api.env.template" "$SAKALA_SECRETS_DIR/api.env" 0600 "${secret_vars[@]}"
     render "$SAKALA_HOME/templates/database.env.template" "$SAKALA_SECRETS_DIR/database.env" 0600 SAKALA_DB_PASSWORD
@@ -541,12 +542,12 @@ start_stack() {
     wait_http "API" "http://127.0.0.1:8100/up" || die "The API did not answer. Check: sudo sakala-compose logs api api-web"
     wait_http "Console" "http://127.0.0.1:8101/healthz" || die "The Console did not answer. Check: sudo sakala-compose logs console"
 
-    # Console v0.4.0 and older ignore the PUBLIC_* environment and would send
-    # browsers to the hosted API. Everything else still installs.
+    # The Console reads console.env when its container starts. A Console that
+    # does not name api.<domain> would send browsers to another API.
     if ! is_dry_run && ! curl -fsS --max-time 5 http://127.0.0.1:8101/runtime-config.js | grep -F "\"https://api.$domain\"" > /dev/null; then
-        console_ok=0
-        warn "The pinned Console ($SAKALA_CONSOLE_VERSION) cannot be pointed at api.$domain when it starts."
+        die "The Console ($SAKALA_CONSOLE_VERSION) does not point at https://api.$domain. Check: sudo sakala-compose logs console, and $SAKALA_CONFIG_DIR/console.env"
     fi
+    is_dry_run || info "The Console points at https://api.$domain."
 }
 
 create_admin() {
@@ -612,7 +613,8 @@ install_agent() {
     local agent_env="$SAKALA_CONFIG_DIR/agent.env" before=
     [ ! -f "$agent_env" ] || before=$(sha256sum "$agent_env")
     render "$SAKALA_HOME/templates/agent.env.template" "$agent_env" 0644 \
-        SAKALA_API_LOOPBACK_PORT SAKALA_STATE_DIR SAKALA_RAILPACK_FRONTEND SAKALA_RAILPACK_IMAGE SAKALA_MAX_ACTIVE_CONTAINERS
+        SAKALA_API_LOOPBACK_PORT SAKALA_STATE_DIR SAKALA_RAILPACK_FRONTEND SAKALA_RAILPACK_IMAGE SAKALA_MAX_ACTIVE_CONTAINERS \
+        SAKALA_PROJECT_DOMAIN
     [ "$before" = "$(sha256sum "$agent_env")" ] || changed=1
 
     # The API issues the agent id and returns its token exactly once.
@@ -687,13 +689,6 @@ summary() {
     fi
     info "Emails only reach the API log until you set a mailer: docs/configuration.md."
     info "Keep the age private key and $SAKALA_SECRETS_DIR/generated.env off this server too."
-    if [ "$console_ok" -eq 0 ]; then
-        printf '\n'
-        warn "The Console image pinned in versions.env ($SAKALA_CONSOLE_VERSION) still points browsers at"
-        warn "the hosted API. Move SAKALA_CONSOLE_IMAGE to a release with runtime configuration"
-        warn "(gmedia/sakala-console#98), then run: sudo $SAKALA_HOME/upgrade.sh"
-        exit 3
-    fi
 }
 
 main() {
