@@ -57,4 +57,11 @@ Isi `GOOGLE_CLIENT_ID` dan `GOOGLE_CLIENT_SECRET` di `api.local.env`. Redirect U
 
 ## Batas project
 
-`/etc/sakala/agent.env` berisi batas node, misalnya jumlah container aktif (`SAKALA_MAX_ACTIVE_CONTAINERS`, dihitung installer dari memori server: memori dikurangi 2 GB, dibagi 256 MB, antara 2 dan 20). File itu ditulis ulang setiap `install.sh` atau `upgrade.sh` berjalan; ubah `SAKALA_MAX_ACTIVE_CONTAINERS` di `/etc/sakala/sakala.env` kalau perlu angka lain. Batas per user, misalnya jumlah project, diatur API lewat `api.local.env` (`SAKALA_MAX_PROJECTS_PER_USER`, default 3).
+`/etc/sakala/agent.env` berisi batas node, misalnya jumlah container aktif (`SAKALA_MAX_ACTIVE_CONTAINERS`, dihitung installer dari memori server: memori dikurangi 2 GB, dibagi 256 MB, antara 2 dan 20). File itu ditulis ulang setiap `install.sh` atau `upgrade.sh` berjalan; ubah `SAKALA_MAX_ACTIVE_CONTAINERS` di `/etc/sakala/sakala.env` kalau perlu angka lain. Batas per workspace pribadi, misalnya jumlah project, diatur API lewat `api.local.env` (`SAKALA_MAX_PROJECTS_PER_USER`, default 3; namanya lebih tua dari fitur workspace). Team tanpa limit profile memakai `SAKALA_TEAM_MAX_PROJECTS`, `SAKALA_TEAM_MAX_ACTIVE_CONTAINERS`, dan `SAKALA_TEAM_MAX_ACTIVE_DEPLOYMENTS` (default 2, 2, dan 1). Admin bisa memberi batas lain lewat limit profile di area admin Console.
+
+## Domain Console dan project
+
+Dua file berikut ditulis ulang installer dari domainmu setiap `install.sh` atau `upgrade.sh` berjalan, jadi jangan diedit:
+
+- `/etc/sakala/console.env` berisi `PUBLIC_API_URL`, `PUBLIC_APP_URL`, dan `PUBLIC_REVERB_*`. Console membacanya saat container start dan menimpa nilai yang tertanam di image, jadi browser memanggil `https://api.<domain>`. Semua nilainya publik; `PUBLIC_REVERB_KEY` adalah app key publik Reverb, bukan secret-nya.
+- `/etc/sakala/agent.env` berisi `SAKALA_PROJECT_DOMAIN_SUFFIXES=run.<domain>`, nilai yang sama dengan `SAKALA_PROJECT_DEFAULT_DOMAIN` di `api.env`. Agent menolak deploy dengan `invalid_runtime_command` untuk domain di luar suffix itu.

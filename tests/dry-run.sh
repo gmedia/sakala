@@ -63,11 +63,16 @@ contains /etc/sakala/secrets/api.env 'SAKALA_PROJECT_DEFAULT_DOMAIN=run.sakala.e
 contains /etc/sakala/secrets/api.env 'SAKALA_XSRF_COOKIE_DOMAIN=.sakala.example.com'
 lacks /etc/sakala/secrets/api.env '${'
 contains /etc/sakala/console.env 'PUBLIC_API_URL=https://api.sakala.example.com'
+contains /etc/sakala/console.env 'PUBLIC_APP_URL=https://app.sakala.example.com'
+contains /etc/sakala/console.env 'PUBLIC_REVERB_HOST=api.sakala.example.com'
+lacks /etc/sakala/console.env 'sakala.dev'
 reverb_key=$(sed -n 's/^SAKALA_REVERB_APP_KEY=//p' /etc/sakala/secrets/generated.env)
 contains /etc/sakala/console.env "PUBLIC_REVERB_KEY=$reverb_key"
 lacks /etc/sakala/console.env 'REVERB_APP_SECRET'
 contains /etc/sakala/agent.env 'SAKALA_CONTAINER_RUNTIME=runsc'
 contains /etc/sakala/agent.env 'SAKALA_API_URL=http://127.0.0.1:8100'
+contains /etc/sakala/agent.env 'SAKALA_PROJECT_DOMAIN_SUFFIXES=run.sakala.example.com'
+lacks /etc/sakala/agent.env '${'
 contains /etc/sakala/edge/run-tls.caddy 'on_demand'
 contains /etc/docker/daemon.json '"runsc"'
 contains /etc/docker/daemon.json 'default-address-pools'

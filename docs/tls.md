@@ -28,7 +28,7 @@ Konsekuensinya: pertanyaan `ask` mengirim satu `HEAD /` ke aplikasi project saat
 
 ### Yang sebaiknya ditambahkan di API
 
-Router hanya tahu project yang sudah berhasil di-deploy. API tahu lebih awal dan bisa menjadi satu sumber kebenaran, termasuk nanti untuk custom domain. `sakala-api` v0.3.0 belum punya endpoint yang bisa ditanya Caddy. Usulannya:
+Router hanya tahu project yang sudah berhasil di-deploy. API tahu lebih awal dan bisa menjadi satu sumber kebenaran, termasuk nanti untuk custom domain. `sakala-api` v0.4.0 belum punya endpoint yang bisa ditanya Caddy. Usulannya:
 
 ```text
 GET /api/v1/tls/ask?domain=<hostname>
