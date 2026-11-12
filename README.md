@@ -187,6 +187,8 @@ Log semua komponen: `sudo sakala-compose logs --tail 100`.
 
 ## Kontribusi dan pengujian
 
+Panduan untuk kontributor, termasuk apa yang ada di repository ini dan cara membuktikan perubahan, ada di [CONTRIBUTING.md](CONTRIBUTING.md). Ringkasnya:
+
 ```bash
 shellcheck -x install.sh upgrade.sh uninstall.sh lib/common.sh scripts/*.sh tests/*.sh
 tests/compose-config.sh   # docker compose config dengan env contoh

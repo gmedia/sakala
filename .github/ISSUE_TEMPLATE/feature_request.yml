@@ -1,0 +1,62 @@
+name: Feature Request
+description: Usulkan kemampuan baru untuk installer, upgrade, backup, atau dokumentasi self-host.
+title: "feat: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Kalau idenya belum konkret, mulai dari [Ideas](https://github.com/gmedia/sakala/discussions/categories/ideas) di Discussions. Fitur untuk Console, API, atau agent diusulkan di repository komponen masing-masing.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Masalah yang diselesaikan
+      description: Ceritakan situasi operator yang ingin kamu perbaiki, bukan hanya solusinya.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - install.sh
+        - upgrade.sh
+        - uninstall.sh
+        - Backup / Restore
+        - TLS / Edge
+        - Compose / Versi pin
+        - Documentation
+        - CI / Tests
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: mvp_scope
+    attributes:
+      label: Scope minimum
+      description: Versi terkecil yang bisa diuji dengan aman, termasuk cara mengujinya (dry run, install-e2e, atau VM sendiri).
+    validations:
+      required: true
+
+  - type: textarea
+    id: existing_installs
+    attributes:
+      label: Dampak ke server yang sudah terpasang
+      description: Apakah server yang sudah terpasang ikut berubah saat upgrade? Bagaimana `upgrade.sh` menanganinya tanpa langkah manual?
+    validations:
+      required: true
+
+  - type: textarea
+    id: safety
+    attributes:
+      label: Dampak keamanan
+      placeholder: Jelaskan dampaknya pada secret, port publik, Docker socket, sandbox gVisor, atau isi backup.
+
+  - type: textarea
+    id: non_goals
+    attributes:
+      label: Di luar scope

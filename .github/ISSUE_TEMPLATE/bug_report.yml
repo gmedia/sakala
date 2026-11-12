@@ -1,0 +1,121 @@
+name: Bug Report
+description: Laporkan masalah saat memasang, meng-upgrade, atau menghapus Sakala self-host.
+title: "fix: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Template ini untuk masalah installer, upgrade, uninstall, backup, dan restore di server self-host. Kalau instalasi berhasil tetapi fitur Console, API, atau agent berperilaku salah, laporkan di [sakala-console](https://github.com/gmedia/sakala-console/issues), [sakala-api](https://github.com/gmedia/sakala-api/issues), atau [sakala-agent](https://github.com/gmedia/sakala-agent/issues). Jangan sertakan secret atau data sensitif.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Ringkasan bug
+      placeholder: "Contoh: upgrade.sh berhenti di langkah backup dengan error \"age: no recipients\"."
+    validations:
+      required: true
+
+  - type: dropdown
+    id: script
+    attributes:
+      label: Yang dijalankan
+      options:
+        - install.sh
+        - upgrade.sh
+        - uninstall.sh
+        - backup.sh / restore.sh
+        - Setelah instalasi (service, sertifikat, backup terjadwal)
+        - Dokumentasi
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Versi OS dan arsitektur
+      description: Output `lsb_release -ds` dan `uname -m`.
+      placeholder: "Contoh: Ubuntu 24.04.3 LTS, x86_64"
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Versi installer
+      description: Tag atau commit repository ini di server, dari `sudo git -C /opt/sakala describe --tags --always`. Untuk upgrade, tulis juga versi sebelumnya kalau kamu tahu.
+      placeholder: "Contoh: 2866a65, atau tag rilis yang di-clone; sebelumnya e1cd884"
+    validations:
+      required: true
+
+  - type: textarea
+    id: command
+    attributes:
+      label: Perintah dan opsi
+      description: Perintah persis yang kamu jalankan. Ganti domain, email, dan kunci publik age dengan contoh kalau tidak ingin dibagikan.
+      placeholder: sudo ./install.sh --domain sakala.example.com --email admin@example.com --age-recipient age1... --tls on-demand --yes
+      render: shell
+    validations:
+      required: true
+
+  - type: dropdown
+    id: tls
+    attributes:
+      label: Mode TLS
+      options:
+        - on-demand (default)
+        - dns
+        - internal
+        - Tidak tahu
+    validations:
+      required: true
+
+  - type: input
+    id: docker
+    attributes:
+      label: Docker sebelum instalasi
+      description: Installer memakai Docker yang sudah ada kalau memenuhi syarat. Output `docker version --format '{{.Server.Version}}'` kalau sudah terpasang.
+      placeholder: "Contoh: belum ada, atau docker-ce 29.1 dari download.docker.com"
+
+  - type: textarea
+    id: failing_step
+    attributes:
+      label: Langkah yang gagal
+      description: Baris `==>` terakhir yang dicetak sebelum error, dan pesan error-nya.
+      placeholder: |
+        ==> Installing gVisor ...
+        error: ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Perilaku yang diharapkan
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs teredaksi
+      description: |
+        Output lengkap perintah di atas. Kalau relevan, tambahkan `sudo journalctl -u sakala-agent --since "1 hour ago"` dan `sudo sakala-compose logs --tail 200 <service>`, misalnya `edge`, `api`, atau `console`.
+        Hapus dulu password, token, isi `/etc/sakala/secrets`, `APP_KEY`, kunci privat age, serta domain dan alamat IP yang tidak ingin kamu bagikan.
+      render: shell
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: Saya sudah mencari issue serupa sebelumnya.
+          required: true
+        - label: Saya tidak menyertakan secret, token, credential, kunci privat, atau data sensitif.
+          required: true
+        - label: Ini bukan laporan kerentanan yang harus dilaporkan privat.
+          required: true

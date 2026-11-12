@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Pertanyaan dan diskusi
+    url: https://github.com/gmedia/sakala/discussions
+    about: Tanya, usulkan ide, atau bahas rencana pekerjaan besar di sini sebelum membuka issue. Discussions ini melayani semua repository Sakala.
+  - name: Laporan keamanan
+    url: https://github.com/gmedia/sakala/security/policy
+    about: Jangan laporkan kerentanan lewat issue publik. Ikuti kanal privat yang dijelaskan di security policy.
+  - name: Mulai berkontribusi
+    url: https://sakala.dev/docs/proyek/start-contributing
+    about: Peta semua repository Sakala, cara menjalankannya, dan cara memilih pekerjaan.
