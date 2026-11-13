@@ -3,6 +3,13 @@
 	# not published to the host or any network.
 	admin localhost:2019
 	auto_https off
+
+	# Request counters per project host. The agent reads them from the admin
+	# endpoint to put idle projects to sleep when the operator enables it
+	# (SAKALA_PROJECT_IDLE_SLEEP_MINUTES). Never published or exported.
+	metrics {
+		per_host
+	}
 }
 
 # The agent writes one validated route per project into this read-only mount,
