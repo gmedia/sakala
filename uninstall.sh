@@ -64,7 +64,6 @@ live systemctl daemon-reload
 step "Removing deployed projects"
 if ! is_dry_run && command -v docker > /dev/null; then
     docker ps -aq --filter label=dev.sakala.managed=true | xargs -r docker rm -f > /dev/null
-    docker network ls -q --filter label=dev.sakala.managed=true | xargs -r docker network rm > /dev/null || true
     docker images -q --filter 'reference=sakala/project-*' | sort -u | xargs -r docker rmi -f > /dev/null || true
     docker images -q --filter 'reference=sakala-railpack-sandbox' --filter 'reference=sakala-edge-dns' |
         sort -u | xargs -r docker rmi -f > /dev/null || true
@@ -77,6 +76,9 @@ if [ -r "$SAKALA_ENV_FILE" ]; then
     live compose --profile operations down --volumes --remove-orphans
 fi
 if ! is_dry_run && command -v docker > /dev/null; then
+    # Project networks only now: the runtime router stays attached to each of them
+    # until the control plane is down, and Docker refuses to remove a network in use.
+    docker network ls -q --filter label=dev.sakala.managed=true | xargs -r docker network rm > /dev/null || true
     docker network rm sakala-runtime sakala-railpack > /dev/null 2>&1 || true
 fi
 

@@ -574,6 +574,8 @@ phase_uninstall() {
     [ -z "$(docker ps -aq --filter label=dev.sakala.managed=true)" ] || fail "Project containers remain."
     [ -z "$(docker volume ls -q --filter label=com.docker.compose.project=sakala)" ] || fail "Control plane volumes remain."
     ! docker network inspect sakala-runtime > /dev/null 2>&1 || fail "The sakala-runtime network remains."
+    [ -z "$(docker network ls -q --filter label=dev.sakala.managed=true)" ] ||
+        fail "Project networks remain: $(docker network ls --filter label=dev.sakala.managed=true --format '{{.Name}}' | tr '\n' ' ')"
     pass "containers, volumes, and networks are gone"
     ! ss -ltnH 'sport = :443' | grep . > /dev/null || fail "Something still listens on port 443."
     { [ -x /usr/local/bin/runsc ] && systemctl is-active --quiet docker; } || fail "Docker or gVisor was removed, but uninstall.sh documents keeping them."
