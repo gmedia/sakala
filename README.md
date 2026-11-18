@@ -38,8 +38,8 @@ Untuk kampus, komunitas, atau tim kecil yang ingin menjalankan Sakala sendiri di
 | gVisor (`runsc`) | rilis yang dipin, dicek dengan `.sha512` rilis dan pin di `versions.env` |
 | PostgreSQL, Valkey, RustFS | container, data di Docker volume |
 | API, worker queue, scheduler, Reverb, Console | container dari `ghcr.io/gmedia`, dipin dengan digest |
-| Runtime router | Caddy di container `sakala-caddy`, route ditulis agent |
-| Edge | Caddy di port 80 dan 443, HTTPS otomatis dari Let's Encrypt |
+| Runtime router | Caddy di container `sakala-caddy`, route ditulis agent; membagi trafik ke semua replika project |
+| Edge publik | Caddy di port 80 dan 443 (service `edge`), HTTPS otomatis dari Let's Encrypt, meneruskan `*.run.<domain>` langsung ke runtime router. Ini bukan Sakala Edge; lihat [Sakala Edge](#sakala-edge-tidak-dipasang) |
 | Sakala Agent | binary di `/usr/local/bin`, dicek dengan `SHA256SUMS` rilis dan pin di `versions.env`, berjalan sebagai `sakala-agent.service` |
 | Backup harian | `sakala-backup.timer`, 02.00 WIB, terenkripsi ke kunci publik age-mu |
 
@@ -72,7 +72,18 @@ Yang dilakukannya, berurutan: memeriksa OS dan resource, memasang paket dasar, D
 
 Setelah selesai, buka `https://app.<domain>` dan login dengan email serta kata sandi yang dicetak. Simpan kata sandi itu, lalu hapus `/etc/sakala/secrets/initial-admin-password`. Sertifikat diminta saat tiap hostname pertama kali dibuka, jadi kunjungan pertama bisa lebih lambat beberapa detik.
 
-Pengaturan lanjutan, seperti SMTP, GitHub App, dan login Google, ada di [docs/configuration.md](docs/configuration.md). Tanpa SMTP, email hanya masuk ke log API.
+Pengaturan lanjutan, seperti SMTP, GitHub App, login Google, replika, dan sleep otomatis, ada di [docs/configuration.md](docs/configuration.md). Tanpa SMTP, email hanya masuk ke log API.
+
+### Replika dan sleep otomatis
+
+Keduanya mati setelah instalasi, dan admin yang menyalakannya:
+
+- **Replika.** Satu project bisa berjalan sebagai beberapa container di server ini, dan runtime router membagi pengunjung ke semuanya. Setiap project dibatasi satu replika sampai admin membuat limit profile dengan `max_replicas` lebih dari 1 di area admin Console (Profil batas) lalu memasangnya ke workspace. Setiap replika dihitung sebagai satu container aktif, jadi batas node `SAKALA_MAX_ACTIVE_CONTAINERS` tetap berlaku. Hanya cocok untuk aplikasi stateless.
+- **Sleep otomatis.** `SAKALA_PROJECT_IDLE_SLEEP_MINUTES=0` di `api.env`, jadi tidak ada project yang ditidurkan. Di satu server, membuka project yang sedang tidur belum membangunkannya; baca [catatannya](docs/configuration.md#sleep-otomatis) sebelum menyalakan.
+
+### Sakala Edge (tidak dipasang)
+
+Sakala Edge adalah service yang menyusun route `*.<domain>` ke runtime router beberapa node, untuk Sakala dengan lebih dari satu server runtime. Di satu server, edge publik meneruskan `*.run.<domain>` langsung ke runtime router di server yang sama, jadi Sakala Edge tidak dibutuhkan dan installer tidak memasangnya, walaupun binary `sakala-edge` ikut di rilis agent. `SAKALA_AGENT_EDGE_ADDRESS` dan `SAKALA_AGENT_REGION` di `agent.env` sengaja kosong. Instalasi multi-node belum didukung repository ini.
 
 ### TLS untuk project
 
@@ -94,6 +105,22 @@ sudo ./upgrade.sh
 ```
 
 `upgrade.sh` membackup dulu dan berhenti kalau backup gagal. Setelah itu ia menarik image sesuai pin baru, menjalankan migrasi, membuat ulang service yang berubah, dan memperbarui agent serta gVisor kalau pin-nya berubah. Image lama tidak membatalkan migrasi, jadi kembali ke versi sebelumnya berarti checkout tag lama, restore backup yang baru dibuat, lalu `upgrade.sh --skip-backup`.
+
+### Catatan upgrade: rilis 2026-11-18
+
+Rilis ini memindahkan pin ke API v0.6.0, Console v0.7.0, agent v0.9.1, dan Caddy 2.11.8. Yang baru: replika project, sleep otomatis (mati secara default), region, dan dukungan Sakala Edge di API dan agent.
+
+Sejak versi ini, API dan agent memakai domain Sakala hosted (`sakala.app`) kalau tidak diberi domain. Installer sudah selalu menulis keduanya dari domainmu, jadi tidak ada yang perlu kamu ubah:
+
+- `SAKALA_PROJECT_DEFAULT_DOMAIN=run.<domain>` di `/etc/sakala/secrets/api.env`. Tanpa ini, project baru mendapat alamat `<nama>.sakala.app`.
+- `SAKALA_PROJECT_DOMAIN_SUFFIXES=run.<domain>` di `/etc/sakala/agent.env`. Tanpa ini, agent v0.8.0 ke atas menolak setiap deploy dengan `invalid_runtime_command`.
+
+`upgrade.sh` menulis ulang kedua file itu dari template, menambahkan `SAKALA_PROJECT_IDLE_SLEEP_MINUTES=0` ke `api.env` dan `SAKALA_MAX_REPLICAS_PER_PROJECT=4` ke `agent.env`, menjalankan migrasi API v0.6.0, membuat ulang container yang pin atau konfigurasinya berubah, lalu memasang agent v0.9.1. Domain project yang sudah ada tidak berubah, jadi `projects:move-domain` tidak perlu dijalankan. Karena image Caddy ikut naik, runtime router dibuat ulang, dan project bisa tidak terjangkau sebentar sampai agent menyambungkan router itu lagi ke network setiap project. Setelah upgrade:
+
+```bash
+grep -E 'SAKALA_PROJECT_(DEFAULT_DOMAIN|IDLE_SLEEP_MINUTES)' /etc/sakala/secrets/api.env   # run.<domain> dan 0
+journalctl -u sakala-agent | grep 'one label under' | tail -n 1                            # harus menyebut run.<domain>
+```
 
 ### Catatan upgrade: rilis 2026-11-12
 
@@ -168,6 +195,8 @@ Script ini membuat satu backup terakhir, lalu menghapus project yang di-deploy, 
 | Project baru tidak bisa dibuka lewat HTTPS | Deploy-nya berhasil? Sertifikat on-demand hanya diminta setelah route ada. `sudo sakala-compose logs edge \| grep -i tls` |
 | Console terbuka tapi tidak bisa login | `curl -s https://app.<domain>/runtime-config.js` harus menyebut `https://api.<domain>`; kalau tidak, cek `/etc/sakala/console.env` dan `sudo sakala-compose logs console` |
 | Deploy gagal dengan `invalid_runtime_command` | `/etc/sakala/agent.env` harus berisi `SAKALA_PROJECT_DOMAIN_SUFFIXES=run.<domain>`; jalankan ulang `sudo ./install.sh` kalau belum |
+| Project baru mendapat alamat `<nama>.sakala.app` | `/etc/sakala/secrets/api.env` harus berisi `SAKALA_PROJECT_DEFAULT_DOMAIN=run.<domain>`, dan `api.local.env` tidak boleh menimpanya; jalankan ulang `sudo ./install.sh` |
+| Project tidak bisa diberi lebih dari satu replika | Workspace-nya butuh limit profile dengan `max_replicas` di atas 1 (area admin Console, Profil batas) |
 | Deploy macet di antrean | `systemctl status sakala-agent` dan `journalctl -u sakala-agent -n 50`; preflight agent menyebut check yang gagal |
 | `runsc` tidak terdaftar | `docker info --format '{{json .Runtimes}}'`, lalu jalankan ulang `sudo ./install.sh` |
 | Email verifikasi tidak sampai | SMTP belum diisi; lihat [docs/configuration.md](docs/configuration.md) |
@@ -216,6 +245,10 @@ This repository installs Sakala on your own server. It is the distribution, not 
 
 **What gets installed.** Docker Engine (rootful), gVisor (checksum-verified), PostgreSQL, Valkey, RustFS, the Sakala API, workers, Reverb, and Console (pinned by digest), a runtime router and a public Caddy edge with automatic HTTPS, the Sakala Agent binary (verified against the release `SHA256SUMS` and the pin), and a daily encrypted backup timer. Every deployed app runs under gVisor on its own Docker network.
 
+**Sakala Edge is not installed.** Sakala Edge builds the routes from project hostnames to the runtime routers of several nodes, for a Sakala with more than one runtime server. On one server the public edge (the `edge` Compose service, plain Caddy) proxies `*.run.<domain>` straight to the local runtime router, so the installer leaves Sakala Edge out even though the agent release ships the `sakala-edge` binary, and keeps `SAKALA_AGENT_EDGE_ADDRESS` and `SAKALA_AGENT_REGION` unset in `agent.env`. Multi-node installs are not supported by this repository yet.
+
+**Replicas and idle sleep** are both off after install. A project runs one container until an admin creates a limit profile with `max_replicas` above 1 (Console admin area, limit profiles) and assigns it to the workspace; the runtime router then spreads visitors across the replicas, and each replica counts against the node's `SAKALA_MAX_ACTIVE_CONTAINERS`. Replicas only suit stateless apps. Idle sleep is off through `SAKALA_PROJECT_IDLE_SLEEP_MINUTES=0` in `api.env`; on one server, opening a sleeping project does not wake it yet, so read [docs/configuration.md](docs/configuration.md#sleep-otomatis) before turning it on.
+
 **Install.**
 
 ```bash
@@ -229,6 +262,8 @@ It is idempotent: rerunning keeps the generated secrets, the agent credentials, 
 **TLS for projects.** By default each project hostname gets its own certificate on first visit, and only once the agent has written a route for it, so it works with any DNS provider. `--tls dns --dns-provider cloudflare` uses one wildcard certificate instead. `--tls internal` uses Caddy's local CA, for tests and private networks only, never for a public instance. See [docs/tls.md](docs/tls.md), which also specifies the endpoint `sakala-api` should add so Caddy can ask the API directly.
 
 **Upgrade.** Check out a newer tag, then `sudo ./upgrade.sh`. It backs up first and stops if the backup fails, then pulls the new pins, migrates, and restarts what changed.
+
+**Upgrade note, release of 2026-11-18.** This release pins API v0.6.0, Console v0.7.0, agent v0.9.1, and Caddy 2.11.8, which bring project replicas, idle sleep (off by default), regions, and Sakala Edge support in the API and agent. From these versions the API and the agent fall back to hosted Sakala's `sakala.app` when no domain is configured. The installer has always written both from your domain, so nothing changes for you: `SAKALA_PROJECT_DEFAULT_DOMAIN=run.<domain>` in `/etc/sakala/secrets/api.env` (without it new projects get `<name>.sakala.app`) and `SAKALA_PROJECT_DOMAIN_SUFFIXES=run.<domain>` in `/etc/sakala/agent.env` (without it agent v0.8.0 and newer refuse every deployment with `invalid_runtime_command`). `upgrade.sh` rewrites both files from the templates, adds `SAKALA_PROJECT_IDLE_SLEEP_MINUTES=0` to `api.env` and `SAKALA_MAX_REPLICAS_PER_PROJECT=4` to `agent.env`, runs the API v0.6.0 migrations, recreates the containers whose pin or configuration changed, and installs agent v0.9.1. Existing project domains stay as they are, so `projects:move-domain` is not needed. The new Caddy image recreates the runtime router, so projects can be unreachable briefly until the agent reconnects the router to each project's network.
 
 **Upgrade note, release of 2026-11-12.** This release pins API v0.4.0, Console v0.5.0, and agent v0.6.0. Earlier installs ran Console v0.4.0, which baked in the hosted Sakala addresses (`app.sakala.dev` and its API), and agent v0.5.0, which deployed only under the hosted Sakala domains: `install.sh` exited 3, the Console sent browsers to the hosted API, and every deployment failed with `invalid_runtime_command`. `upgrade.sh` fixes all of it with no manual step. It backs up, runs the API v0.4.0 migrations (each user gets a personal workspace that takes over their projects), rewrites `/etc/sakala/console.env` and recreates the Console, which reads `PUBLIC_*` from it when the container starts, and installs agent v0.6.0 with `SAKALA_PROJECT_DOMAIN_SUFFIXES=run.<domain>` in `/etc/sakala/agent.env`, the same value as the API's `SAKALA_PROJECT_DEFAULT_DOMAIN`. Afterwards, `curl -s https://app.<domain>/runtime-config.js` must name `https://api.<domain>` and `journalctl -u sakala-agent | grep 'one label under'` must name `run.<domain>`; then redeploy projects that failed before. The installer no longer exits 3: a Console that does not point at `https://api.<domain>` stops it with an error. Upgrading from the old pins to these is tested by [upgrade-e2e](.github/workflows/upgrade-e2e.yml): the backup taken first passes `backup.sh --check` and restores, the migrations run, the admin gets a personal workspace holding their old project, the old project keeps answering 200 without a redeploy, and a new deployment succeeds. Its old install uses `sakala.localhost`, because agent v0.5.0 deploys only under the hosted Sakala domains; after the upgrade the same domain keeps working through `SAKALA_PROJECT_DOMAIN_SUFFIXES=run.sakala.localhost`.
 
