@@ -22,7 +22,8 @@
 #   E2E_DOMAIN                       default sakala.test, through /etc/hosts; never a hosted
 #                                    Sakala domain, so the test proves a self-hosted one works
 #   E2E_GITHUB_TOKEN                 optional; becomes GITHUB_PUBLIC_API_TOKEN in api.local.env
-#   E2E_REPOSITORY, E2E_BRANCH, E2E_ROOT_DIRECTORY   the project to deploy
+#   E2E_REPOSITORY, E2E_BRANCH, E2E_ROOT_DIRECTORY   the project to deploy; an empty
+#                                    E2E_ROOT_DIRECTORY deploys the repository root
 #   E2E_CONTAINER_RUNTIME            the runtime the deployed container must use, default runsc
 
 set -euo pipefail
@@ -32,7 +33,8 @@ domain=${E2E_DOMAIN:-sakala.test}
 email=${E2E_ADMIN_EMAIL:-admin@$domain}
 repository=${E2E_REPOSITORY:-https://github.com/gmedia/sakala-infra}
 branch=${E2E_BRANCH:-main}
-root_directory=${E2E_ROOT_DIRECTORY:-examples/static-app}
+# Only an unset variable takes the default; an empty one means the repository root.
+root_directory=${E2E_ROOT_DIRECTORY-examples/static-app}
 expected_runtime=${E2E_CONTAINER_RUNTIME:-runsc}
 home=/opt/sakala
 state=/var/tmp/sakala-e2e
@@ -307,9 +309,30 @@ check_agent() {
         fail "agent.env does not set SAKALA_PROJECT_DOMAIN_SUFFIXES=run.$domain."
     grep -qx "SAKALA_PROJECT_DEFAULT_DOMAIN=run.$domain" /etc/sakala/secrets/api.env ||
         fail "api.env does not set SAKALA_PROJECT_DEFAULT_DOMAIN=run.$domain."
+    # A single server has no Sakala Edge, so the agent reports no address for it.
+    grep -q '^SAKALA_AGENT_EDGE_ADDRESS=' /etc/sakala/agent.env && fail "agent.env sets SAKALA_AGENT_EDGE_ADDRESS, but a single server has no Sakala Edge."
     journalctl -u sakala-agent.service --no-pager | grep -F "one label under run.$domain (" > /dev/null ||
         fail "The agent's preflight does not report run.$domain as its project domain: $(journalctl -u sakala-agent.service --no-pager | grep -F project-domains | tail -n 1)"
     pass "the agent accepts project domains under run.$domain, the API's default project domain"
+}
+
+# Idle sleep stays off and projects run one replica until the operator or an admin
+# changes it. Skipped for an API that predates both (before v0.6.0).
+check_workspace_defaults() {
+    step "Idle sleep is off and projects run one replica by default"
+    local limits
+    limits=$(api_json 200 GET /api/v1/app/pilot-limits)
+    if ! jq -e '.data | has("project_idle_sleep_minutes")' <<< "$limits" > /dev/null; then
+        note "this API has no idle sleep or replicas yet; skipped"
+        return 0
+    fi
+    grep -qx 'SAKALA_PROJECT_IDLE_SLEEP_MINUTES=0' /etc/sakala/secrets/api.env ||
+        fail "api.env does not set SAKALA_PROJECT_IDLE_SLEEP_MINUTES=0."
+    [ "$(jq -r '.data.project_idle_sleep_minutes' <<< "$limits")" = 0 ] ||
+        fail "GET /api/v1/app/pilot-limits reports project_idle_sleep_minutes $(jq -r '.data.project_idle_sleep_minutes' <<< "$limits"), expected 0."
+    [ "$(jq -r '.data.quotas.max_replicas' <<< "$limits")" = 1 ] ||
+        fail "GET /api/v1/app/pilot-limits reports max_replicas $(jq -r '.data.quotas.max_replicas' <<< "$limits"), expected 1."
+    pass "pilot limits: project_idle_sleep_minutes 0, max_replicas 1 (api.env SAKALA_PROJECT_IDLE_SLEEP_MINUTES=0)"
 }
 
 phase_verify() {
@@ -422,13 +445,15 @@ wait_deployment() {
 phase_deploy() {
     [ -s "$ca" ] || fetch_ca || fail "No local CA root certificate; run the verify phase first."
     login
+    check_workspace_defaults
 
-    step "Creating a project from $repository ($root_directory)"
+    step "Creating a project from $repository (${root_directory:-repository root})"
     local name created project_id project slug host
     name="e2e-$(date -u +%H%M%S)"
     created=$(api_json 201 POST /api/v1/app/projects --data "$(jq -cn --arg name "$name" --arg url "$repository" \
         --arg branch "$branch" --arg root "$root_directory" \
-        '{name: $name, repository: {type: "public_url", url: $url}, branch: $branch, root_directory: $root}')")
+        '{name: $name, repository: {type: "public_url", url: $url}, branch: $branch,
+          root_directory: (if $root == "" then null else $root end)}')")
     project_id=$(jq -r '.data.id' <<< "$created")
     pass "project $project_id created, inspection $(jq -r '.data.preview_status' <<< "$created")"
 
@@ -549,6 +574,8 @@ phase_uninstall() {
     [ -z "$(docker ps -aq --filter label=dev.sakala.managed=true)" ] || fail "Project containers remain."
     [ -z "$(docker volume ls -q --filter label=com.docker.compose.project=sakala)" ] || fail "Control plane volumes remain."
     ! docker network inspect sakala-runtime > /dev/null 2>&1 || fail "The sakala-runtime network remains."
+    [ -z "$(docker network ls -q --filter label=dev.sakala.managed=true)" ] ||
+        fail "Project networks remain: $(docker network ls --filter label=dev.sakala.managed=true --format '{{.Name}}' | tr '\n' ' ')"
     pass "containers, volumes, and networks are gone"
     ! ss -ltnH 'sport = :443' | grep . > /dev/null || fail "Something still listens on port 443."
     { [ -x /usr/local/bin/runsc ] && systemctl is-active --quiet docker; } || fail "Docker or gVisor was removed, but uninstall.sh documents keeping them."

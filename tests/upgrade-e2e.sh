@@ -333,6 +333,7 @@ phase_upgrade() {
 
     login
     check_workspace_backfill
+    check_workspace_defaults
     check_agent_version
 
     step "A new deployment of the existing project"
