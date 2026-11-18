@@ -309,11 +309,17 @@ check_agent() {
         fail "agent.env does not set SAKALA_PROJECT_DOMAIN_SUFFIXES=run.$domain."
     grep -qx "SAKALA_PROJECT_DEFAULT_DOMAIN=run.$domain" /etc/sakala/secrets/api.env ||
         fail "api.env does not set SAKALA_PROJECT_DEFAULT_DOMAIN=run.$domain."
+    # Browsers wake a sleeping project at the public API, the one the Console
+    # calls; the agent itself keeps the loopback address.
+    grep -qx "SAKALA_PUBLIC_API_URL=https://api.$domain" /etc/sakala/agent.env ||
+        fail "agent.env does not set SAKALA_PUBLIC_API_URL=https://api.$domain."
+    grep -qx 'SAKALA_API_URL=http://127.0.0.1:8100' /etc/sakala/agent.env ||
+        fail "agent.env does not reach the API over loopback (SAKALA_API_URL=http://127.0.0.1:8100)."
     # A single server has no Sakala Edge, so the agent reports no address for it.
     grep -q '^SAKALA_AGENT_EDGE_ADDRESS=' /etc/sakala/agent.env && fail "agent.env sets SAKALA_AGENT_EDGE_ADDRESS, but a single server has no Sakala Edge."
     journalctl -u sakala-agent.service --no-pager | grep -F "one label under run.$domain (" > /dev/null ||
         fail "The agent's preflight does not report run.$domain as its project domain: $(journalctl -u sakala-agent.service --no-pager | grep -F project-domains | tail -n 1)"
-    pass "the agent accepts project domains under run.$domain, the API's default project domain"
+    pass "the agent accepts project domains under run.$domain, the API's default project domain, and wakes projects through https://api.$domain"
 }
 
 # Idle sleep stays off and projects run one replica until the operator or an admin
@@ -333,6 +339,14 @@ check_workspace_defaults() {
     [ "$(jq -r '.data.quotas.max_replicas' <<< "$limits")" = 1 ] ||
         fail "GET /api/v1/app/pilot-limits reports max_replicas $(jq -r '.data.quotas.max_replicas' <<< "$limits"), expected 1."
     pass "pilot limits: project_idle_sleep_minutes 0, max_replicas 1 (api.env SAKALA_PROJECT_IDLE_SLEEP_MINUTES=0)"
+    # The build rate limit arrived in API v0.7.0.
+    if jq -e '.data.quotas | has("max_builds_per_hour")' <<< "$limits" > /dev/null; then
+        grep -qx 'SAKALA_PROJECT_MAX_BUILDS_PER_HOUR=20' /etc/sakala/secrets/api.env ||
+            fail "api.env does not set SAKALA_PROJECT_MAX_BUILDS_PER_HOUR=20."
+        [ "$(jq -r '.data.quotas.max_builds_per_hour' <<< "$limits")" = 20 ] ||
+            fail "GET /api/v1/app/pilot-limits reports max_builds_per_hour $(jq -r '.data.quotas.max_builds_per_hour' <<< "$limits"), expected 20."
+        pass "pilot limits: max_builds_per_hour 20 (api.env SAKALA_PROJECT_MAX_BUILDS_PER_HOUR=20)"
+    fi
 }
 
 phase_verify() {
