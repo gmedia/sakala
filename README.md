@@ -2,7 +2,7 @@
 
 Pasang dan jalankan Sakala di server sendiri. Repository ini adalah distribusi, bukan source code: installer, Compose, versi yang dipin, backup, dan dokumentasi self-host. Source tiap komponen ada di repository masing-masing ([sakala-api](https://github.com/gmedia/sakala-api), [sakala-console](https://github.com/gmedia/sakala-console), [sakala-agent](https://github.com/gmedia/sakala-agent)).
 
-> **Status: versi pertama, terbukti terpasang di VM Ubuntu 24.04 bersih (VM GitHub Actions, dan untuk pin 2026-11-18 juga VM QEMU/KVM lokal), belum di server sungguhan.** Setiap pull request yang menyentuh installer menjalankan `install.sh`, deploy satu project di bawah gVisor, `upgrade.sh`, dan `uninstall.sh` di VM baru ([install-e2e](.github/workflows/install-e2e.yml)), dengan domain self-hosted `sakala.test` lewat `/etc/hosts` dan sertifikat dari CA lokal (`--tls internal`), karena runner tidak punya DNS publik. Tes itu juga membuka Console di Chrome dan memastikan Console memanggil `api.sakala.test`, bukan API Sakala hosted. Workflow kedua ([upgrade-e2e](.github/workflows/upgrade-e2e.yml)) memasang pin sebelumnya, men-deploy project, lalu meng-upgrade ke pin sekarang dengan `upgrade.sh`. Yang belum terbukti: Let's Encrypt, server sungguhan dengan DNS publik, dan restore ke server sungguhan; lihat [Batasan saat ini](#batasan-saat-ini).
+> **Status: versi pertama, terbukti terpasang di VM Ubuntu 24.04 bersih (VM GitHub Actions, dan untuk pin pertama 2026-11-18, dengan API v0.6.0, juga VM QEMU/KVM lokal), belum di server sungguhan.** Setiap pull request yang menyentuh installer menjalankan `install.sh`, deploy satu project di bawah gVisor, `upgrade.sh`, dan `uninstall.sh` di VM baru ([install-e2e](.github/workflows/install-e2e.yml)), dengan domain self-hosted `sakala.test` lewat `/etc/hosts` dan sertifikat dari CA lokal (`--tls internal`), karena runner tidak punya DNS publik. Tes itu juga membuka Console di Chrome dan memastikan Console memanggil `api.sakala.test`, bukan API Sakala hosted. Workflow kedua ([upgrade-e2e](.github/workflows/upgrade-e2e.yml)) memasang pin sebelumnya, men-deploy project, lalu meng-upgrade ke pin sekarang dengan `upgrade.sh`. Yang belum terbukti: Let's Encrypt, server sungguhan dengan DNS publik, dan restore ke server sungguhan; lihat [Batasan saat ini](#batasan-saat-ini).
 
 English: [jump to the English section](#english).
 
@@ -72,14 +72,14 @@ Yang dilakukannya, berurutan: memeriksa OS dan resource, memasang paket dasar, D
 
 Setelah selesai, buka `https://app.<domain>` dan login dengan email serta kata sandi yang dicetak. Simpan kata sandi itu, lalu hapus `/etc/sakala/secrets/initial-admin-password`. Sertifikat diminta saat tiap hostname pertama kali dibuka, jadi kunjungan pertama bisa lebih lambat beberapa detik.
 
-Pengaturan lanjutan, seperti SMTP, GitHub App, login Google, replika, dan sleep otomatis, ada di [docs/configuration.md](docs/configuration.md). Tanpa SMTP, email hanya masuk ke log API.
+Pengaturan lanjutan, seperti SMTP, GitHub App, login Google, batas build per jam, replika, sleep otomatis, dan release command, ada di [docs/configuration.md](docs/configuration.md). Tanpa SMTP, email hanya masuk ke log API.
 
 ### Replika dan sleep otomatis
 
 Keduanya mati setelah instalasi, dan admin yang menyalakannya:
 
 - **Replika.** Satu project bisa berjalan sebagai beberapa container di server ini, dan runtime router membagi pengunjung ke semuanya. Setiap project dibatasi satu replika sampai admin membuat limit profile dengan `max_replicas` lebih dari 1 di area admin Console (Profil batas) lalu memasangnya ke workspace. Setiap replika dihitung sebagai satu container aktif, jadi batas node `SAKALA_MAX_ACTIVE_CONTAINERS` tetap berlaku. Hanya cocok untuk aplikasi stateless.
-- **Sleep otomatis.** `SAKALA_PROJECT_IDLE_SLEEP_MINUTES=0` di `api.env`, jadi tidak ada project yang ditidurkan. Di satu server, sampai agent mendukung `SAKALA_PUBLIC_API_URL`, membuka project yang sedang tidur belum membangunkannya; baca [catatannya](docs/configuration.md#sleep-otomatis) sebelum menyalakan.
+- **Sleep otomatis.** `SAKALA_PROJECT_IDLE_SLEEP_MINUTES=0` di `api.env`, jadi tidak ada project yang ditidurkan. Kalau dinyalakan, pengunjung yang membuka project yang sedang tidur membangunkannya lewat `https://api.<domain>` (`SAKALA_PUBLIC_API_URL` di `agent.env`). Caranya ada di [docs/configuration.md](docs/configuration.md#sleep-otomatis).
 
 ### Sakala Edge (tidak dipasang)
 
@@ -105,6 +105,22 @@ sudo ./upgrade.sh
 ```
 
 `upgrade.sh` membackup dulu dan berhenti kalau backup gagal. Setelah itu ia menarik image sesuai pin baru, menjalankan migrasi, membuat ulang service yang berubah, dan memperbarui agent serta gVisor kalau pin-nya berubah. Image lama tidak membatalkan migrasi, jadi kembali ke versi sebelumnya berarti checkout tag lama, restore backup yang baru dibuat, lalu `upgrade.sh --skip-backup`.
+
+### Catatan upgrade: rilis kedua 2026-11-18
+
+Rilis ini memindahkan pin ke API v0.7.0, Console v0.8.0, dan agent v0.10.0. Yang baru:
+
+- **Project yang tidur bisa dibangunkan pengunjung.** `upgrade.sh` menambahkan `SAKALA_PUBLIC_API_URL=https://api.<domain>` ke `/etc/sakala/agent.env`, jadi halaman tunggu project yang tidur meminta wake ke API publik, bukan ke alamat loopback agent. Sleep otomatis tetap mati sampai kamu menyalakannya.
+- **Batas build per jam.** Setiap workspace boleh memulai 20 deployment per 60 menit; admin tidak dibatasi. `upgrade.sh` menulis `SAKALA_PROJECT_MAX_BUILDS_PER_HOUR=20` ke `api.env`. Angka lain, atau `0` untuk mematikannya, diisi di `api.local.env` ([docs/configuration.md](docs/configuration.md#batas-build-per-jam)).
+- **Release command.** Pemilik project bisa mengisi perintah, misalnya migrasi database, yang dijalankan sekali per deployment sebelum versi baru menerima traffic. Batas waktunya `SAKALA_RELEASE_COMMAND_TIMEOUT_SECONDS=600` di `agent.env`; operator tidak perlu mengatur apa pun ([docs/configuration.md](docs/configuration.md#release-command)).
+- **Cookie host-only.** Runtime router menghapus atribut `Domain` dari cookie aplikasi, supaya cookie satu project tidak terkirim ke project lain. Route lama mendapatnya setelah project di-deploy ulang, di-restart, atau dibangunkan.
+
+Pemantauan kesehatan Sakala Edge di API hanya berlaku untuk instalasi dengan Sakala Edge, yang tidak dipasang di sini. `upgrade.sh` menjalankan migrasi API v0.7.0, membuat ulang container API dan Console, memasang agent v0.10.0, lalu me-restart agent. Image Caddy tidak berubah. Setelah upgrade:
+
+```bash
+grep -E 'SAKALA_(PUBLIC_API_URL|RELEASE_COMMAND_TIMEOUT_SECONDS)' /etc/sakala/agent.env   # https://api.<domain> dan 600
+grep SAKALA_PROJECT_MAX_BUILDS_PER_HOUR /etc/sakala/secrets/api.env                     # 20
+```
 
 ### Catatan upgrade: rilis 2026-11-18
 
@@ -235,7 +251,7 @@ Lisensi: Apache-2.0.
 
 This repository installs Sakala on your own server. It is the distribution, not the source: installer, Compose files, pinned versions, backups, and self-host docs.
 
-> **Status: first version, proven to install on a clean Ubuntu 24.04 VM (GitHub Actions, and for the 2026-11-18 pins also a local QEMU/KVM VM), not yet on a real server.** Every pull request that touches the installer runs `install.sh`, deploys a project under gVisor, and runs `upgrade.sh` and `uninstall.sh` on a fresh VM ([install-e2e](.github/workflows/install-e2e.yml)), on the self-hosted domain `sakala.test` through `/etc/hosts`, with certificates from a local CA (`--tls internal`) because the runner has no public DNS. It also opens the Console in Chrome and requires it to call `api.sakala.test`, not the hosted Sakala API. A second workflow ([upgrade-e2e](.github/workflows/upgrade-e2e.yml)) installs the previous pins, deploys a project, and upgrades to the current pins with `upgrade.sh`. Not yet proven: Let's Encrypt, a real server with public DNS, and restoring onto a real server.
+> **Status: first version, proven to install on a clean Ubuntu 24.04 VM (GitHub Actions, and for the first 2026-11-18 pins, with API v0.6.0, also a local QEMU/KVM VM), not yet on a real server.** Every pull request that touches the installer runs `install.sh`, deploys a project under gVisor, and runs `upgrade.sh` and `uninstall.sh` on a fresh VM ([install-e2e](.github/workflows/install-e2e.yml)), on the self-hosted domain `sakala.test` through `/etc/hosts`, with certificates from a local CA (`--tls internal`) because the runner has no public DNS. It also opens the Console in Chrome and requires it to call `api.sakala.test`, not the hosted Sakala API. A second workflow ([upgrade-e2e](.github/workflows/upgrade-e2e.yml)) installs the previous pins, deploys a project, and upgrades to the current pins with `upgrade.sh`. Not yet proven: Let's Encrypt, a real server with public DNS, and restoring onto a real server.
 
 **Who it is for.** Universities, communities, or small teams that want to run Sakala on one server, so people can deploy apps from GitHub to `https://<name>.run.<domain>`.
 
@@ -247,7 +263,7 @@ This repository installs Sakala on your own server. It is the distribution, not 
 
 **Sakala Edge is not installed.** Sakala Edge builds the routes from project hostnames to the runtime routers of several nodes, for a Sakala with more than one runtime server. On one server the public edge (the `edge` Compose service, plain Caddy) proxies `*.run.<domain>` straight to the local runtime router, so the installer leaves Sakala Edge out even though the agent release ships the `sakala-edge` binary, and keeps `SAKALA_AGENT_EDGE_ADDRESS` and `SAKALA_AGENT_REGION` unset in `agent.env`. Multi-node installs are not supported by this repository yet.
 
-**Replicas and idle sleep** are both off after install. A project runs one container until an admin creates a limit profile with `max_replicas` above 1 (Console admin area, limit profiles) and assigns it to the workspace; the runtime router then spreads visitors across the replicas, and each replica counts against the node's `SAKALA_MAX_ACTIVE_CONTAINERS`. Replicas only suit stateless apps. Idle sleep is off through `SAKALA_PROJECT_IDLE_SLEEP_MINUTES=0` in `api.env`; on one server, until the agent supports `SAKALA_PUBLIC_API_URL`, opening a sleeping project does not wake it, so read [docs/configuration.md](docs/configuration.md#sleep-otomatis) before turning it on.
+**Replicas and idle sleep** are both off after install. A project runs one container until an admin creates a limit profile with `max_replicas` above 1 (Console admin area, limit profiles) and assigns it to the workspace; the runtime router then spreads visitors across the replicas, and each replica counts against the node's `SAKALA_MAX_ACTIVE_CONTAINERS`. Replicas only suit stateless apps. Idle sleep is off through `SAKALA_PROJECT_IDLE_SLEEP_MINUTES=0` in `api.env`. When turned on, a visitor who opens a sleeping project wakes it through `https://api.<domain>`, the agent's `SAKALA_PUBLIC_API_URL`; see [docs/configuration.md](docs/configuration.md#sleep-otomatis).
 
 **Install.**
 
@@ -262,6 +278,8 @@ It is idempotent: rerunning keeps the generated secrets, the agent credentials, 
 **TLS for projects.** By default each project hostname gets its own certificate on first visit, and only once the agent has written a route for it, so it works with any DNS provider. `--tls dns --dns-provider cloudflare` uses one wildcard certificate instead. `--tls internal` uses Caddy's local CA, for tests and private networks only, never for a public instance. See [docs/tls.md](docs/tls.md), which also specifies the endpoint `sakala-api` should add so Caddy can ask the API directly.
 
 **Upgrade.** Check out a newer tag, then `sudo ./upgrade.sh`. It backs up first and stops if the backup fails, then pulls the new pins, migrates, and restarts what changed.
+
+**Upgrade note, second release of 2026-11-18.** This release pins API v0.7.0, Console v0.8.0, and agent v0.10.0. Visitors can now wake a sleeping project: `upgrade.sh` adds `SAKALA_PUBLIC_API_URL=https://api.<domain>` to `/etc/sakala/agent.env`, so the sleeping page asks the public API to wake the project instead of the agent's loopback address (idle sleep stays off until you turn it on). Each workspace may start 20 deployments per rolling hour, admins excepted: `upgrade.sh` writes `SAKALA_PROJECT_MAX_BUILDS_PER_HOUR=20` to `api.env`, and another number, or `0` to turn the limit off, goes in `api.local.env`. Project owners can set a release command, such as database migrations, that runs once per deployment before the new version takes traffic; it needs nothing from the operator, and its time limit is `SAKALA_RELEASE_COMMAND_TIMEOUT_SECONDS=600` in `agent.env`. The runtime router now strips the `Domain` attribute from app cookies, so one project's cookies do not reach another; existing routes get it at their next deploy, restart, or wake. The API's Edge health monitoring only applies with Sakala Edge, which is not installed here. `upgrade.sh` runs the API v0.7.0 migrations, recreates the API and Console containers, and installs and restarts agent v0.10.0; the Caddy image does not change. Afterwards, `grep -E 'SAKALA_(PUBLIC_API_URL|RELEASE_COMMAND_TIMEOUT_SECONDS)' /etc/sakala/agent.env` must show `https://api.<domain>` and `600`.
 
 **Upgrade note, release of 2026-11-18.** This release pins API v0.6.0, Console v0.7.0, agent v0.9.1, and Caddy 2.11.8, which bring project replicas, idle sleep (off by default), regions, and Sakala Edge support in the API and agent. From these versions the API and the agent fall back to hosted Sakala's `sakala.app` when no domain is configured. The installer has always written both from your domain, so nothing changes for you: `SAKALA_PROJECT_DEFAULT_DOMAIN=run.<domain>` in `/etc/sakala/secrets/api.env` (without it new projects get `<name>.sakala.app`) and `SAKALA_PROJECT_DOMAIN_SUFFIXES=run.<domain>` in `/etc/sakala/agent.env` (without it agent v0.8.0 and newer refuse every deployment with `invalid_runtime_command`). `upgrade.sh` rewrites both files from the templates, adds `SAKALA_PROJECT_IDLE_SLEEP_MINUTES=0` to `api.env` and `SAKALA_MAX_REPLICAS_PER_PROJECT=4` to `agent.env`, runs the API v0.6.0 migrations, recreates the containers whose pin or configuration changed, and installs agent v0.9.1. Existing project domains stay as they are, so `projects:move-domain` is not needed. The new Caddy image recreates the public edge and the runtime router, so projects are briefly unreachable: in the upgrade test the old project answered 502 and then refused connections for about 36 seconds in total, then answered 200 again without a redeploy. Upgrade outside busy hours.
 

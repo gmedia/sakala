@@ -614,7 +614,7 @@ install_agent() {
     [ ! -f "$agent_env" ] || before=$(sha256sum "$agent_env")
     render "$SAKALA_HOME/templates/agent.env.template" "$agent_env" 0644 \
         SAKALA_API_LOOPBACK_PORT SAKALA_STATE_DIR SAKALA_RAILPACK_FRONTEND SAKALA_RAILPACK_IMAGE SAKALA_MAX_ACTIVE_CONTAINERS \
-        SAKALA_PROJECT_DOMAIN
+        SAKALA_PROJECT_DOMAIN SAKALA_DOMAIN
     [ "$before" = "$(sha256sum "$agent_env")" ] || changed=1
 
     # The API issues the agent id and returns its token exactly once.
