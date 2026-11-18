@@ -79,7 +79,7 @@ Pengaturan lanjutan, seperti SMTP, GitHub App, login Google, replika, dan sleep 
 Keduanya mati setelah instalasi, dan admin yang menyalakannya:
 
 - **Replika.** Satu project bisa berjalan sebagai beberapa container di server ini, dan runtime router membagi pengunjung ke semuanya. Setiap project dibatasi satu replika sampai admin membuat limit profile dengan `max_replicas` lebih dari 1 di area admin Console (Profil batas) lalu memasangnya ke workspace. Setiap replika dihitung sebagai satu container aktif, jadi batas node `SAKALA_MAX_ACTIVE_CONTAINERS` tetap berlaku. Hanya cocok untuk aplikasi stateless.
-- **Sleep otomatis.** `SAKALA_PROJECT_IDLE_SLEEP_MINUTES=0` di `api.env`, jadi tidak ada project yang ditidurkan. Di satu server, membuka project yang sedang tidur belum membangunkannya; baca [catatannya](docs/configuration.md#sleep-otomatis) sebelum menyalakan.
+- **Sleep otomatis.** `SAKALA_PROJECT_IDLE_SLEEP_MINUTES=0` di `api.env`, jadi tidak ada project yang ditidurkan. Di satu server, sampai agent mendukung `SAKALA_PUBLIC_API_URL`, membuka project yang sedang tidur belum membangunkannya; baca [catatannya](docs/configuration.md#sleep-otomatis) sebelum menyalakan.
 
 ### Sakala Edge (tidak dipasang)
 
@@ -247,7 +247,7 @@ This repository installs Sakala on your own server. It is the distribution, not 
 
 **Sakala Edge is not installed.** Sakala Edge builds the routes from project hostnames to the runtime routers of several nodes, for a Sakala with more than one runtime server. On one server the public edge (the `edge` Compose service, plain Caddy) proxies `*.run.<domain>` straight to the local runtime router, so the installer leaves Sakala Edge out even though the agent release ships the `sakala-edge` binary, and keeps `SAKALA_AGENT_EDGE_ADDRESS` and `SAKALA_AGENT_REGION` unset in `agent.env`. Multi-node installs are not supported by this repository yet.
 
-**Replicas and idle sleep** are both off after install. A project runs one container until an admin creates a limit profile with `max_replicas` above 1 (Console admin area, limit profiles) and assigns it to the workspace; the runtime router then spreads visitors across the replicas, and each replica counts against the node's `SAKALA_MAX_ACTIVE_CONTAINERS`. Replicas only suit stateless apps. Idle sleep is off through `SAKALA_PROJECT_IDLE_SLEEP_MINUTES=0` in `api.env`; on one server, opening a sleeping project does not wake it yet, so read [docs/configuration.md](docs/configuration.md#sleep-otomatis) before turning it on.
+**Replicas and idle sleep** are both off after install. A project runs one container until an admin creates a limit profile with `max_replicas` above 1 (Console admin area, limit profiles) and assigns it to the workspace; the runtime router then spreads visitors across the replicas, and each replica counts against the node's `SAKALA_MAX_ACTIVE_CONTAINERS`. Replicas only suit stateless apps. Idle sleep is off through `SAKALA_PROJECT_IDLE_SLEEP_MINUTES=0` in `api.env`; on one server, until the agent supports `SAKALA_PUBLIC_API_URL`, opening a sleeping project does not wake it, so read [docs/configuration.md](docs/configuration.md#sleep-otomatis) before turning it on.
 
 **Install.**
 
