@@ -4,7 +4,8 @@
 # with SAKALA_DRY_RUN=1. Everything that needs neither a Docker daemon nor systemd
 # runs for real: input checks, apt packages including Docker Engine, the gVisor and
 # agent downloads with their checksums, the runsc registration in daemon.json,
-# generated secrets and their modes, rendered files, and `docker compose config`.
+# generated secrets and their modes, rendered files, the runtime router's trusted
+# addresses, and `docker compose config`.
 # Starting containers, systemd units, and the steps that need a running API are
 # printed instead. It is not a substitute for a full install on a clean VM.
 #
@@ -85,6 +86,10 @@ pin=$(sed -n 's/^SAKALA_AGENT_SHA256=//p' /opt/sakala/versions.env)
 [ "$(sha256sum /usr/local/bin/sakala-agent | cut -d' ' -f1)" = "$pin" ] && pass "agent binary matches the pin" || fail "agent binary does not match the pin"
 grep -q 'compose up -d --wait postgres' /root/install.log && pass "starting the stack is printed, not run" || fail "no dry-run compose line"
 [ -x /usr/local/bin/sakala-compose ] && pass "sakala-compose helper installed" || fail "no sakala-compose"
+# No daemon here, so sakala-runtime has no subnet to read and the dry run uses a documentation range.
+grep -qF '[dry-run] docker network create sakala-runtime' /root/install.log && pass "creating sakala-runtime is printed, not run" || fail "no dry-run line for sakala-runtime"
+contains /etc/sakala/sakala.env 'SAKALA_RUNTIME_TRUSTED_PROXIES=192.0.2.0/24'
+grep -qx 'SAKALA_RUNTIME_TRUSTED_PROXIES_OVERRIDE=' /etc/sakala/sakala.env && pass "no trusted proxies override by default" || fail "unexpected override in sakala.env"
 
 before=$(sha256sum /etc/sakala/secrets/generated.env)
 if "${install[@]}" --domain sakala.example.com --age-recipient "$recipient" > /root/rerun.log 2>&1; then pass "second run succeeds"; else fail "second run"; tail -20 /root/rerun.log; fi
@@ -101,6 +106,18 @@ jq -e '."default-address-pools" and ."log-driver" == "json-file" and .runtimes.r
     pass "daemon.json gains address pools and keeps its own settings" || fail "daemon.json after merge: $(cat /etc/docker/daemon.json)"
 ls /etc/docker/daemon.json.bak-* > /dev/null 2>&1 && pass "the previous daemon.json is kept as a backup" || fail "no daemon.json backup"
 
+# An operator override replaces the computed subnet and survives reruns; broad ranges are refused.
+set_override() { sed -i "s|^SAKALA_RUNTIME_TRUSTED_PROXIES_OVERRIDE=.*|SAKALA_RUNTIME_TRUSTED_PROXIES_OVERRIDE=$1|" /etc/sakala/sakala.env; }
+set_override '10.20.30.0/24 fd00:5ac::/64'
+if "${install[@]}" > /root/override.log 2>&1; then pass "rerun with a trusted proxies override"; else fail "rerun with a trusted proxies override"; tail -20 /root/override.log; fi
+contains /etc/sakala/sakala.env 'SAKALA_RUNTIME_TRUSTED_PROXIES=10.20.30.0/24 fd00:5ac::/64'
+contains /etc/sakala/sakala.env 'SAKALA_RUNTIME_TRUSTED_PROXIES_OVERRIDE=10.20.30.0/24 fd00:5ac::/64'
+for bad in private_ranges 0.0.0.0/0 ::/0; do
+    set_override "$bad"
+    expect_fail "refuses the trusted proxies override $bad" 'TRUSTED_PROXIES_OVERRIDE in .* must be' "${install[@]}"
+done
+set_override ''
+
 if SAKALA_DNS_API_TOKEN=test-token-123 "${install[@]}" --tls dns --dns-provider cloudflare > /root/dns.log 2>&1; then pass "DNS mode dry run"; else fail "DNS mode dry run"; tail -20 /root/dns.log; fi
 mode_is 600 /etc/sakala/secrets/dns.env
 contains /etc/sakala/edge/run-tls.caddy 'dns cloudflare {env.SAKALA_DNS_API_TOKEN}'
@@ -115,6 +132,7 @@ contains /etc/sakala/edge/global.d/00-sakala-tls-internal.caddy 'local_certs'
 contains /etc/sakala/sakala.env 'SAKALA_TLS_MODE=internal'
 grep -q '^SAKALA_EDGE_IMAGE=$' /etc/sakala/sakala.env && pass "internal mode uses the stock edge image" || fail "internal mode kept a DNS edge image"
 [ ! -e /etc/sakala/secrets/dns.env ] && pass "internal mode removes the DNS token" || fail "dns.env remains in internal mode"
+contains /etc/sakala/sakala.env 'SAKALA_RUNTIME_TRUSTED_PROXIES=192.0.2.0/24'
 grep -q 'compose restart edge' /root/internal.log && pass "a TLS mode change restarts the edge" || fail "no edge restart after the TLS mode change"
 grep -q 'only for tests and private networks' /root/internal.log && pass "internal mode warns that it is not for public installs" || fail "no internal-mode warning"
 

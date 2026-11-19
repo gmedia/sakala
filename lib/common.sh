@@ -71,6 +71,30 @@ valid_age_recipient() {
     [[ $1 =~ ^age1[02-9ac-hj-np-z]{58}$ ]]
 }
 
+# One or more IPv4 or IPv6 addresses or CIDR ranges separated by spaces, as the
+# runtime router's trusted_proxies takes them. Caddy would expand the keyword
+# private_ranges, and a /0 range trusts every address, so neither passes.
+valid_trusted_proxies() {
+    local entries entry address prefix max
+    local octet='(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])'
+    read -r -a entries <<< "$1"
+    [ "${#entries[@]}" -gt 0 ] || return 1
+    for entry in "${entries[@]}"; do
+        address=${entry%/*}
+        if [[ $address =~ ^$octet\.$octet\.$octet\.$octet$ ]]; then
+            max=32
+        elif [[ $address =~ ^[0-9A-Fa-f:.]+$ && $address == *:* ]]; then
+            max=128
+        else
+            return 1
+        fi
+        if [ "$address" != "$entry" ]; then
+            prefix=${entry#*/}
+            [[ $prefix =~ ^[1-9][0-9]{0,2}$ ]] && [ "$prefix" -le "$max" ] || return 1
+        fi
+    done
+}
+
 # Reads KEY=value lines without evaluating them, so a value is never run as code.
 env_get() {
     local file=$1 key=$2

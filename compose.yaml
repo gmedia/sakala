@@ -186,6 +186,13 @@ services:
     <<: *hardening
     image: ${SAKALA_CADDY_IMAGE:?pin SAKALA_CADDY_IMAGE in versions.env}
     container_name: sakala-caddy
+    environment:
+      # The only addresses whose X-Forwarded-* headers the router keeps: the
+      # subnet of sakala-runtime, which holds only this router and the edge.
+      # Written to sakala.env by install.sh and upgrade.sh. Without it the router
+      # would trust nobody and tell every app that visitors came over plain HTTP,
+      # so a missing value stops Compose instead.
+      SAKALA_RUNTIME_TRUSTED_PROXIES: ${SAKALA_RUNTIME_TRUSTED_PROXIES:?run install.sh or upgrade.sh to set SAKALA_RUNTIME_TRUSTED_PROXIES in /etc/sakala/sakala.env}
     volumes:
       - ./caddy/runtime.Caddyfile:/etc/caddy/Caddyfile:ro
       - ${SAKALA_STATE_DIR:-/var/lib/sakala}/caddy/sites:/etc/caddy/sites:ro
@@ -273,6 +280,9 @@ networks:
   sakala-internal:
     name: sakala-internal
   # Created by install.sh, because the agent expects it to exist before it starts.
+  # Only the edge and the runtime router join it; the agent puts each project on
+  # its own network and connects the router there. The router trusts
+  # X-Forwarded-* from this network's subnet, so nothing else may join it.
   sakala-runtime:
     name: sakala-runtime
     external: true

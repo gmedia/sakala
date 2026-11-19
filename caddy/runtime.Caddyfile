@@ -10,6 +10,26 @@
 	metrics {
 		per_host
 	}
+
+	# Only the public edge may vouch for the visitor. It terminates TLS and sets
+	# X-Forwarded-For, -Proto, and -Host from its TCP connection, so the router
+	# keeps those headers only when they come from the edge's address and
+	# overwrites them for any other peer.
+	#
+	# SAKALA_RUNTIME_TRUSTED_PROXIES is the subnet of the sakala-runtime network,
+	# which holds only the edge and this router (docs/configuration.md). Never
+	# trust private_ranges or another broad range: the agent connects this router
+	# to every project's network, so a workload could then send a forged
+	# X-Forwarded-For to another project's app, for example to get around a rate
+	# limit per IP address. An empty value trusts nobody.
+	#
+	# trusted_proxies_strict reads X-Forwarded-For from right to left, so a value
+	# a client put at the left is never taken as the client address.
+	servers {
+		trusted_proxies static {$SAKALA_RUNTIME_TRUSTED_PROXIES}
+		trusted_proxies_strict
+		client_ip_headers X-Forwarded-For
+	}
 }
 
 # The agent writes one validated route per project into this read-only mount,

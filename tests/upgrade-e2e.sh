@@ -330,6 +330,7 @@ phase_upgrade() {
     check_agent
     check_pins
     check_old_project
+    check_router_trust
 
     login
     check_workspace_backfill

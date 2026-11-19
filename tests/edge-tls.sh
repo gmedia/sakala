@@ -4,7 +4,10 @@
 #   - the on-demand TLS gate says yes only for hostnames the runtime router has a route for,
 #     even when that project itself answers 404;
 #   - a TLS handshake for a routed project succeeds and one for an unknown name fails;
-#   - the DNS-mode configuration parses.
+#   - the DNS-mode configuration parses;
+#   - a project sees the visitor's scheme and address in X-Forwarded-*, while a
+#     forged X-Forwarded-For, from a visitor or from a workload that shares a
+#     network with the router, never reaches it as the client address.
 # Certificates come from Caddy's internal CA (`local_certs`), so nothing reaches an ACME server.
 # Needs Docker. Touches no server.
 
@@ -19,8 +22,8 @@ work=$(mktemp -d)
 failures=0
 
 cleanup() {
-    docker rm -f "$prefix-router" "$prefix-edge" > /dev/null 2>&1 || true
-    docker network rm "$prefix" > /dev/null 2>&1 || true
+    docker rm -f "$prefix-router" "$prefix-edge" "$prefix-app" > /dev/null 2>&1 || true
+    docker network rm "$prefix" "$prefix-project" "$prefix-public" > /dev/null 2>&1 || true
     rm -rf "$work"
 }
 trap cleanup EXIT
@@ -36,12 +39,31 @@ cp caddy/run-tls.on-demand.caddy "$work/edge/run-tls.caddy"
 printf 'local_certs\n' > "$work/edge/global.d/test.caddy"
 # What the agent writes for a deployed project; this one answers 404 on purpose.
 printf 'known.run.example.test:80 {\n\trespond "the project says not found" 404\n}\n' > "$work/sites/0190-test.Caddyfile"
+# A project that echoes the forwarding headers it receives, routed as the agent
+# routes projects today, and as it will once it sets the client address itself.
+printf 'fwd.run.example.test:80 {\n\treverse_proxy app:8080\n}\n' > "$work/sites/0191-fwd.Caddyfile"
+printf 'fwd-next.run.example.test:80 {\n\treverse_proxy app:8080 {\n\t\theader_up X-Forwarded-For {client_ip}\n\t\theader_up X-Real-IP {client_ip}\n\t}\n}\n' \
+    > "$work/sites/0192-fwd-next.Caddyfile"
+mkdir -p "$work/app"
+printf '{\n\tadmin off\n\tauto_https off\n}\n:8080 {\n\trespond "proto={header.X-Forwarded-Proto} host={header.X-Forwarded-Host} for={header.X-Forwarded-For} real={header.X-Real-IP}"\n}\n' \
+    > "$work/app/Caddyfile"
 chmod -R a+rX "$work"
 
+# "$prefix" stands in for sakala-runtime (the edge and the router only),
+# "$prefix-project" for a project's network (the router and that project's
+# containers), and "$prefix-public" for the internet in front of the edge.
 docker network create "$prefix" > /dev/null
+docker network create "$prefix-project" > /dev/null
+docker network create "$prefix-public" > /dev/null
+trusted=$(docker network inspect "$prefix" --format '{{range .IPAM.Config}}{{.Subnet}} {{end}}')
 docker run -d --name "$prefix-router" --network "$prefix" --network-alias sakala-caddy \
+    -e SAKALA_RUNTIME_TRUSTED_PROXIES="$trusted" \
     -v "$PWD/caddy/runtime.Caddyfile:/etc/caddy/Caddyfile:ro" \
     -v "$work/sites:/etc/caddy/sites:ro" \
+    "$SAKALA_CADDY_IMAGE" > /dev/null
+docker network connect --alias fwd.run.example.test --alias fwd-next.run.example.test "$prefix-project" "$prefix-router"
+docker run -d --name "$prefix-app" --network "$prefix-project" --network-alias app \
+    -v "$work/app/Caddyfile:/etc/caddy/Caddyfile:ro" \
     "$SAKALA_CADDY_IMAGE" > /dev/null
 docker run -d --name "$prefix-edge" --network "$prefix" -p 127.0.0.1::443 \
     -e SAKALA_DOMAIN=example.test -e SAKALA_ADMIN_EMAIL=admin@example.test \
@@ -49,6 +71,7 @@ docker run -d --name "$prefix-edge" --network "$prefix" -p 127.0.0.1::443 \
     -v "$PWD/caddy/edge.Caddyfile:/etc/caddy/Caddyfile:ro" \
     -v "$work/edge:/etc/caddy/sakala:ro" \
     "$SAKALA_CADDY_IMAGE" > /dev/null
+docker network connect --alias fwd.run.example.test --alias fwd-next.run.example.test "$prefix-public" "$prefix-edge"
 
 ask() {
     docker exec "$prefix-edge" wget -q -O /dev/null "http://127.0.0.1:5555/tls-ask?domain=$1" 2> /dev/null
@@ -78,6 +101,54 @@ if curl -sk --max-time 20 --resolve "unknown.run.example.test:$port:127.0.0.1" "
     fail "tls: an unknown project completed a TLS handshake"
 else
     pass "tls: an unknown project gets no certificate"
+fi
+
+# Forwarding headers. A visitor on the public network forges all of them; the
+# edge must replace them from the connection, and the router must keep what the
+# edge set. (A visitor through the published port would arrive from the Docker
+# gateway, which is inside the trusted subnet, and prove less.)
+forged=203.0.113.9
+edge_ip=$(docker inspect --format "{{(index .NetworkSettings.Networks \"$prefix\").IPAddress}}" "$prefix-edge")
+# visit <network> <url>: prints the visitor's own address, then the project's answer.
+visit() {
+    docker run --rm --network "$1" "$SAKALA_CADDY_IMAGE" sh -c \
+        'printf "%s " "$(hostname -i)"; wget -qO- --no-check-certificate --header "X-Forwarded-For: $1" --header "X-Forwarded-Proto: http" --header "X-Forwarded-Host: forged.example" --header "X-Real-IP: $1" "$2"' \
+        sh "$forged" "$2" 2>&1 || true
+}
+out=$(visit "$prefix-public" https://fwd.run.example.test/)
+visitor=${out%% *}
+body=${out#* }
+if [ "$body" = "proto=https host=fwd.run.example.test for=$visitor, $edge_ip real=$forged" ]; then
+    pass "headers: the project sees https, its host, and the visitor then the edge in X-Forwarded-For"
+else
+    fail "headers: the project behind the edge received: $body (visitor $visitor, edge $edge_ip)"
+fi
+out=$(visit "$prefix-public" https://fwd-next.run.example.test/)
+visitor=${out%% *}
+body=${out#* }
+if [ "$body" = "proto=https host=fwd-next.run.example.test for=$visitor real=$visitor" ]; then
+    pass "headers: with {client_ip}, X-Forwarded-For and X-Real-IP name only the visitor"
+else
+    fail "headers: with {client_ip} the project behind the edge received: $body (visitor $visitor)"
+fi
+
+# A workload on the project network talks to the router directly and forges the
+# headers. The router must not trust it, although it shares a network with the router.
+out=$(visit "$prefix-project" http://fwd.run.example.test/)
+neighbor=${out%% *}
+body=${out#* }
+if [ "$body" = "proto=http host=fwd.run.example.test for=$neighbor real=$forged" ]; then
+    pass "headers: a workload next to the router cannot forge X-Forwarded-For or -Proto"
+else
+    fail "headers: a forging workload ($neighbor) got the project to see: $body"
+fi
+out=$(visit "$prefix-project" http://fwd-next.run.example.test/)
+neighbor=${out%% *}
+body=${out#* }
+if [ "$body" = "proto=http host=fwd-next.run.example.test for=$neighbor real=$neighbor" ]; then
+    pass "headers: with {client_ip}, a forging workload is named by its own address"
+else
+    fail "headers: with {client_ip} a forging workload ($neighbor) got the project to see: $body"
 fi
 
 # DNS mode: the same Caddyfile with the wildcard snippet must parse once a module provides `dns`.
