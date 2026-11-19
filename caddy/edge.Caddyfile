@@ -20,6 +20,13 @@
 	# Extra global options from the operator, for example `local_certs` for a test
 	# install. Optional; an empty directory is fine.
 	import /etc/caddy/sakala/global.d/*.caddy
+
+	# The edge is the first hop, so it trusts no proxy: there is no
+	# `trusted_proxies` here or in global.d, and it must stay that way. Caddy then
+	# replaces any X-Forwarded-For, -Proto, and -Host a client sends with values
+	# from the TCP connection, and the runtime router trusts exactly those
+	# (caddy/runtime.Caddyfile). The Host header is passed on unchanged, and so
+	# is every other request header, X-Real-IP included.
 }
 
 app.{$SAKALA_DOMAIN} {

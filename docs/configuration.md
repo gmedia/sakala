@@ -125,3 +125,20 @@ Keduanya wajib. Tanpa `SAKALA_PROJECT_DEFAULT_DOMAIN`, API v0.6.0 ke atas member
 `agent.env` tidak mengisi `SAKALA_AGENT_EDGE_ADDRESS` dan `SAKALA_AGENT_REGION`. Keduanya hanya dipakai Sakala Edge dan penempatan per region di Sakala dengan beberapa server runtime, yang belum didukung repository ini. Pemantauan kesehatan Edge di API v0.7.0 (`edge:check-health`) juga hanya berlaku untuk Sakala Edge, jadi di sini tidak ada yang dipantau.
 
 Sejak agent v0.10.0, runtime router menghapus atribut `Domain` dari setiap header `Set-Cookie` aplikasi, supaya cookie satu project tidak terkirim ke project lain di bawah `run.<domain>`. Tidak ada yang perlu diatur. Route lama mendapat aturan ini setelah project di-deploy ulang, di-restart, atau dibangunkan.
+
+## Alamat pengunjung dan header X-Forwarded-*
+
+Request ke project melewati dua Caddy: edge publik, yang memegang TLS, lalu runtime router, yang meneruskannya ke container project. Edge adalah hop pertama dan tidak mempercayai proxy mana pun, jadi `X-Forwarded-For`, `X-Forwarded-Proto`, dan `X-Forwarded-Host` yang dikirim pengunjung selalu diganti dengan nilai dari koneksinya. Runtime router mempertahankan ketiga header itu hanya kalau datang dari alamat di `SAKALA_RUNTIME_TRUSTED_PROXIES`, yaitu dari edge, dan menimpanya untuk pengirim lain. Hasilnya, aplikasi menerima `X-Forwarded-Proto: https` dan membuat URL `https://`.
+
+`SAKALA_RUNTIME_TRUSTED_PROXIES` di `/etc/sakala/sakala.env` berisi subnet network Docker `sakala-runtime` (IPv4, dan IPv6 kalau ada), yang dibaca ulang dengan `docker network inspect sakala-runtime` setiap `install.sh` atau `upgrade.sh` berjalan. Edge menghubungi router lewat network itu, langsung antar-container tanpa NAT. Network itu hanya berisi edge dan router: agent menaruh setiap project di network-nya sendiri lalu menyambungkan router ke sana, tidak pernah ke `sakala-runtime`. Jangan menyambungkan container lain ke `sakala-runtime`, karena semua alamat di subnet itu dipercaya. Kalau nilainya kosong, Compose menolak start, supaya router tidak diam-diam kembali memberi tahu aplikasi bahwa pengunjung datang lewat HTTP.
+
+Router sengaja tidak mempercayai `private_ranges` atau rentang lebar lain. Router tersambung ke network setiap project, jadi dengan rentang seperti itu workload satu project bisa mengirim `X-Forwarded-For` palsu ke aplikasi project lain, misalnya untuk lolos dari rate limit per IP. Router juga memakai `trusted_proxies_strict`, yang membaca `X-Forwarded-For` dari kanan, sehingga alamat paling kiri yang ditulis klien tidak pernah dianggap alamat klien.
+
+Untuk mempercayai alamat lain, misalnya kalau kamu memasang proxy sendiri di antara edge dan router, isi `SAKALA_RUNTIME_TRUSTED_PROXIES_OVERRIDE` di `sakala.env` dengan alamat IP atau CIDR yang dipisah spasi, lalu jalankan ulang `sudo ./install.sh`. Installer menolak `private_ranges`, rentang `/0`, dan nilai yang bukan alamat. Kosongkan lagi untuk kembali ke subnet `sakala-runtime`. Jangan mengubah `SAKALA_RUNTIME_TRUSTED_PROXIES` langsung, karena installer menulisnya ulang setiap kali berjalan.
+
+Yang diterima aplikasi dengan agent v0.10.0:
+
+- `X-Forwarded-For: <pengunjung>, <alamat edge>`. Router menambahkan alamat edge di belakang alamat yang ditulis edge. Aplikasi yang hanya mempercayai hop terdekat, misalnya Laravel dengan `trustProxies(at: '*')`, akan melaporkan alamat edge sebagai alamat klien.
+- `X-Real-IP` belum diatur siapa pun. Nilai yang dikirim pengunjung diteruskan apa adanya oleh kedua Caddy, jadi aplikasi jangan mempercayainya.
+
+Rilis agent berikutnya akan menambahkan `header_up X-Forwarded-For {client_ip}` dan `header_up X-Real-IP {client_ip}` ke setiap route, sehingga kedua header hanya berisi alamat pengunjung. Perubahan itu berlaku di sini setelah pin agent di `versions.env` memuatnya.

@@ -47,8 +47,8 @@ tests/edge-tls.sh
 tests/dry-run.sh
 ```
 
-- `tests/compose-config.sh` menjalankan `docker compose config` terhadap `compose.yaml` dengan env contoh di direktori sementara, untuk kedua mode TLS. Ia memeriksa bahwa setiap image memakai digest yang dipin, hanya edge yang membuka port publik, dan token DNS hanya sampai ke edge. Cukup Docker CLI dengan plugin Compose, tanpa daemon.
-- `tests/edge-tls.sh` menjalankan container Caddy sungguhan dengan CA internal, tanpa menghubungi Let's Encrypt. Ia membuktikan edge hanya menerbitkan sertifikat untuk hostname yang punya route. Butuh daemon Docker.
+- `tests/compose-config.sh` menjalankan `docker compose config` terhadap `compose.yaml` dengan env contoh di direktori sementara, untuk kedua mode TLS. Ia memeriksa bahwa setiap image memakai digest yang dipin, hanya edge yang membuka port publik, token DNS hanya sampai ke edge, dan runtime router mendapat `SAKALA_RUNTIME_TRUSTED_PROXIES` tanpa mempercayai `private_ranges`. Cukup Docker CLI dengan plugin Compose, tanpa daemon.
+- `tests/edge-tls.sh` menjalankan container Caddy sungguhan dengan CA internal, tanpa menghubungi Let's Encrypt. Ia membuktikan edge hanya menerbitkan sertifikat untuk hostname yang punya route, dan aplikasi menerima `X-Forwarded-*` dari edge tetapi tidak dari pengunjung atau workload lain yang memalsukannya. Butuh daemon Docker.
 - `tests/dry-run.sh` menjalankan `install.sh`, `upgrade.sh`, dan `uninstall.sh` dengan `SAKALA_DRY_RUN=1` di container Ubuntu 24.04 dan 26.04 yang dibuang setelahnya. Paket apt, unduhan gVisor dan agent beserta checksum-nya, secret yang dibuat, dan file yang di-render dijalankan sungguhan. Langkah yang butuh systemd atau daemon Docker di dalam container hanya dicetak. Test ini butuh internet dan cukup lama (CI memberi batas 40 menit untuk kedua image). Untuk iterasi cepat, jalankan satu image saja: `tests/dry-run.sh ubuntu:24.04`.
 
 Dry run bukan pengganti instalasi sungguhan. Itu tugas workflow di bagian berikut.
@@ -88,7 +88,7 @@ Participation follows the [Code of Conduct](https://github.com/gmedia/.github/bl
 shellcheck -x install.sh upgrade.sh uninstall.sh lib/common.sh scripts/*.sh tests/*.sh
 for f in install.sh upgrade.sh uninstall.sh lib/common.sh tests/*.sh; do bash -n "$f"; done
 tests/compose-config.sh   # docker compose config with sample env, both TLS modes, no daemon needed
-tests/edge-tls.sh         # real Caddy containers with an internal CA, no ACME
+tests/edge-tls.sh         # real Caddy containers with an internal CA, no ACME; also forged X-Forwarded-* headers
 tests/dry-run.sh          # install, upgrade, uninstall with SAKALA_DRY_RUN=1 in throwaway Ubuntu containers
 ```
 

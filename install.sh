@@ -370,6 +370,18 @@ prepare_host() {
     [ -e "$placeholder" ] || install -m 0644 -o sakala-agent -g sakala-agent /dev/stdin "$placeholder" <<< \
         '# Keeps the route import glob valid before the agent writes the first route.'
 
+    # The edge reaches the runtime router over this network, and nothing else
+    # joins it. Created here rather than by Compose because the agent expects it
+    # before it starts, and write_config reads its subnet.
+    if ! docker network inspect sakala-runtime > /dev/null 2>&1; then
+        if is_dry_run; then
+            live docker network create sakala-runtime
+        else
+            docker network create sakala-runtime > /dev/null
+            info "Created the Docker network sakala-runtime."
+        fi
+    fi
+
     if command -v ufw > /dev/null && ufw status 2> /dev/null | grep '^Status: active' > /dev/null; then
         ufw allow 80/tcp > /dev/null
         ufw allow 443/tcp > /dev/null
@@ -379,6 +391,25 @@ prepare_host() {
 }
 
 random_hex() { openssl rand -hex "$1"; }
+
+# The runtime router keeps X-Forwarded-* only from these addresses
+# (caddy/runtime.Caddyfile). The edge reaches it over sakala-runtime, container
+# to container, and Docker picks that network's subnet, so it is read again on
+# every run instead of being kept from an earlier one.
+runtime_network_subnets() {
+    local output subnets
+    output=$(docker network inspect sakala-runtime --format '{{range .IPAM.Config}}{{.Subnet}} {{end}}' 2> /dev/null || true)
+    read -r -a subnets <<< "$output"
+    output="${subnets[*]}"
+    if [ -z "$output" ] && is_dry_run; then
+        # A dry run without a Docker daemon has no network to read. 192.0.2.0/24
+        # is reserved for documentation (RFC 5737) and never routed.
+        output=192.0.2.0/24
+    fi
+    [ -n "$output" ] || die "Cannot read the subnet of the Docker network sakala-runtime. Check: docker network inspect sakala-runtime"
+    valid_trusted_proxies "$output" || die "The Docker network sakala-runtime has an unexpected subnet: $output"
+    printf '%s' "$output"
+}
 
 write_config() {
     step "Writing configuration and secrets"
@@ -415,6 +446,17 @@ EOF
     # A value the operator set in sakala.env wins over the one computed from memory.
     saved_max=$(env_get "$SAKALA_ENV_FILE" SAKALA_MAX_ACTIVE_CONTAINERS)
     [[ ! $saved_max =~ ^[0-9]+$ ]] || max_active_containers=$saved_max
+    local trusted_override trusted_proxies
+    trusted_override=$(env_get "$SAKALA_ENV_FILE" SAKALA_RUNTIME_TRUSTED_PROXIES_OVERRIDE)
+    if [ -n "$trusted_override" ]; then
+        valid_trusted_proxies "$trusted_override" ||
+            die "SAKALA_RUNTIME_TRUSTED_PROXIES_OVERRIDE in $SAKALA_ENV_FILE must be IP addresses or CIDR ranges separated by spaces, without private_ranges or a /0 range. Got: $trusted_override"
+        trusted_proxies=$trusted_override
+        info "The runtime router trusts X-Forwarded-* from $trusted_proxies (SAKALA_RUNTIME_TRUSTED_PROXIES_OVERRIDE)."
+    else
+        trusted_proxies=$(runtime_network_subnets)
+        info "The runtime router trusts X-Forwarded-* from the edge on sakala-runtime ($trusted_proxies)."
+    fi
     write_file "$SAKALA_ENV_FILE" 0640 <<EOF
 # Written by install.sh; options passed to it on a later run update this file.
 # compose.yaml reads it next to versions.env.
@@ -434,6 +476,12 @@ SAKALA_STATE_DIR=$SAKALA_STATE_DIR
 SAKALA_API_LOOPBACK_PORT=8100
 SAKALA_CONSOLE_LOOPBACK_PORT=8101
 SAKALA_MAX_ACTIVE_CONTAINERS=$max_active_containers
+# Addresses the runtime router accepts X-Forwarded-* headers from: the subnet of
+# the sakala-runtime network, read again on every run. To use other addresses,
+# set the override (IP addresses or CIDR ranges separated by spaces); read
+# docs/configuration.md first.
+SAKALA_RUNTIME_TRUSTED_PROXIES_OVERRIDE=$trusted_override
+SAKALA_RUNTIME_TRUSTED_PROXIES=$trusted_proxies
 EOF
 
     SAKALA_DOMAIN=$domain
@@ -516,9 +564,6 @@ ports_free_or_ours() {
 start_stack() {
     step "Starting the control plane"
     ports_free_or_ours
-    if ! is_dry_run && ! docker network inspect sakala-runtime > /dev/null 2>&1; then
-        docker network create sakala-runtime > /dev/null
-    fi
     # In DNS mode the edge image is built here, not pulled.
     local pulled=(postgres valkey rustfs api api-web console runtime-caddy)
     [ "$tls_mode" = dns ] || pulled+=(edge)

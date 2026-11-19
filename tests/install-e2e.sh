@@ -322,6 +322,24 @@ check_agent() {
     pass "the agent accepts project domains under run.$domain, the API's default project domain, and wakes projects through https://api.$domain"
 }
 
+# The runtime router keeps X-Forwarded-* only from the edge: it trusts exactly the
+# subnet of sakala-runtime, and that network holds the edge and the router alone,
+# also once projects are deployed (tests/edge-tls.sh checks the headers themselves).
+check_router_trust() {
+    step "The runtime router trusts X-Forwarded-* from the sakala-runtime network alone"
+    local subnets trusted members
+    subnets=$(docker network inspect sakala-runtime --format '{{range .IPAM.Config}}{{.Subnet}} {{end}}' | xargs)
+    trusted=$(docker exec sakala-caddy printenv SAKALA_RUNTIME_TRUSTED_PROXIES 2> /dev/null || true)
+    { [ -n "$subnets" ] && [ "$trusted" = "$subnets" ]; } ||
+        fail "The runtime router trusts '${trusted:-nothing}', but sakala-runtime has the subnet(s) '${subnets:-none}'."
+    grep -qx "SAKALA_RUNTIME_TRUSTED_PROXIES=$subnets" /etc/sakala/sakala.env ||
+        fail "sakala.env does not set SAKALA_RUNTIME_TRUSTED_PROXIES=$subnets."
+    members=$(docker network inspect sakala-runtime --format '{{range .Containers}}{{.Name}}{{"\n"}}{{end}}' | sort | xargs)
+    [ "$members" = "sakala-caddy sakala-edge-1" ] ||
+        fail "sakala-runtime must hold only the edge and the router, but holds: $members"
+    pass "the router trusts $trusted, the subnet of sakala-runtime, which holds only $members"
+}
+
 # Idle sleep stays off and projects run one replica until the operator or an admin
 # changes it. Skipped for an API that predates both (before v0.6.0).
 check_workspace_defaults() {
@@ -354,6 +372,7 @@ phase_verify() {
     check_https
     check_console_config
     check_agent
+    check_router_trust
 }
 
 # --- API session, as the Console does it: CSRF cookie, then JSON with the token.
@@ -557,6 +576,7 @@ phase_upgrade() {
     check_https
     check_console_config
     check_agent
+    check_router_trust
     retry 30 2 https_ok "https://$host/" || fail "https://$host/ answered $(https_status "https://$host/") after the upgrade, expected 200"
     pass "https://$host/ still 200 after the upgrade"
     [ "$(docker ps -q --filter label=dev.sakala.managed=true | xargs -r docker inspect --format '{{.Id}} {{.State.StartedAt}}')" = "$project_started" ] ||
