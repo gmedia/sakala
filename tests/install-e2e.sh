@@ -13,6 +13,10 @@
 #                this API, agent ready with run.<domain> as its project domain, runsc registered
 #   deploy       log in as the generated admin, create a project from a public repository,
 #                wait for inspection and deployment, fetch https://<slug>.run.<domain>/
+#   sleep        turn idle sleep on with a one-minute window, wait until the project sleeps,
+#                turn it off again, then open the project in a browser and require the
+#                waiting page to wake it through https://api.<domain>
+#   reuse        redeploy the live commit and require it to reuse the live image, no build
 #   upgrade      upgrade.sh with the same pins: backup taken, secrets kept, everything still up
 #   uninstall    uninstall.sh --yes: everything removed except backups, Docker, and gVisor
 #   diagnostics <dir>   collect logs into <dir> with secrets redacted
@@ -89,7 +93,7 @@ remember_secrets() {
         sed -n 's/^[A-Z0-9_]*=//p' "$secrets/generated.env" || true
         sed -n 's/^SAKALA_AGENT_TOKEN=//p' "$secrets/agent-credentials.env" || true
         # Only uncommented lines, which in this test means the GitHub token.
-        sed -n 's/^[A-Z0-9_]*=//p' "$secrets/api.local.env" "$secrets/dns.env" || true
+        sed -n 's/^[A-Z0-9_]*=//p' "$secrets/api.local.env" "$secrets/agent.local.env" "$secrets/dns.env" || true
         cat "$secrets/initial-admin-password" || true
         printf '%s\n' "${E2E_GITHUB_TOKEN:-}"
     } 2> /dev/null | awk 'length($0) >= 8' | sort -u >> "$state/redact.list"
@@ -244,10 +248,10 @@ prepare_browser() {
     fi
     if [ ! -d "$dir/node_modules/playwright-core" ]; then
         install -d -m 0700 "$dir"
-        cp "$repo/tests/console-browser/package.json" "$repo/tests/console-browser/package-lock.json" \
-            "$repo/tests/console-browser/check.mjs" "$dir/"
+        cp "$repo/tests/console-browser/package.json" "$repo/tests/console-browser/package-lock.json" "$dir/"
         (cd "$dir" && npm ci --ignore-scripts --no-audit --no-fund --loglevel=error) || fail "npm ci for the browser check failed."
     fi
+    cp "$repo"/tests/console-browser/*.mjs "$dir/"
     if command -v google-chrome > /dev/null; then
         browser_channel=chrome
     else
@@ -317,6 +321,13 @@ check_agent() {
         fail "agent.env does not reach the API over loopback (SAKALA_API_URL=http://127.0.0.1:8100)."
     # A single server has no Sakala Edge, so the agent reports no address for it.
     grep -q '^SAKALA_AGENT_EDGE_ADDRESS=' /etc/sakala/agent.env && fail "agent.env sets SAKALA_AGENT_EDGE_ADDRESS, but a single server has no Sakala Edge."
+    # Managed databases stay off unless the operator opts in (docs/configuration.md).
+    grep -q '^SAKALA_DATABASE_DRIVER=' /etc/sakala/agent.env && fail "agent.env sets SAKALA_DATABASE_DRIVER, but managed databases are off by default."
+    # The operator's own agent settings: written once, 0600, read after agent.env.
+    [ "$(stat -c %a /etc/sakala/secrets/agent.local.env 2> /dev/null)" = 600 ] ||
+        fail "/etc/sakala/secrets/agent.local.env is missing or not mode 0600."
+    grep -qx 'EnvironmentFile=-/etc/sakala/secrets/agent.local.env' /etc/systemd/system/sakala-agent.service ||
+        fail "sakala-agent.service does not read /etc/sakala/secrets/agent.local.env."
     journalctl -u sakala-agent.service --no-pager | grep -F "one label under run.$domain (" > /dev/null ||
         fail "The agent's preflight does not report run.$domain as its project domain: $(journalctl -u sakala-agent.service --no-pager | grep -F project-domains | tail -n 1)"
     pass "the agent accepts project domains under run.$domain, the API's default project domain, and wakes projects through https://api.$domain"
@@ -364,6 +375,16 @@ check_workspace_defaults() {
         [ "$(jq -r '.data.quotas.max_builds_per_hour' <<< "$limits")" = 20 ] ||
             fail "GET /api/v1/app/pilot-limits reports max_builds_per_hour $(jq -r '.data.quotas.max_builds_per_hour' <<< "$limits"), expected 20."
         pass "pilot limits: max_builds_per_hour 20 (api.env SAKALA_PROJECT_MAX_BUILDS_PER_HOUR=20)"
+    fi
+    # Managed databases arrived in API v0.9.0. Without a database node they stay off.
+    if jq -e '.data | has("databases")' <<< "$limits" > /dev/null; then
+        grep -qx 'SAKALA_DATABASE_DEFAULT_MAX_COUNT=0' /etc/sakala/secrets/api.env ||
+            fail "api.env does not set SAKALA_DATABASE_DEFAULT_MAX_COUNT=0."
+        [ "$(jq -r '.data.databases.available' <<< "$limits")" = false ] ||
+            fail "GET /api/v1/app/pilot-limits reports databases.available $(jq -r '.data.databases.available' <<< "$limits"), expected false."
+        [ "$(jq -r '.data.quotas.max_databases' <<< "$limits")" = 0 ] ||
+            fail "GET /api/v1/app/pilot-limits reports max_databases $(jq -r '.data.quotas.max_databases' <<< "$limits"), expected 0."
+        pass "pilot limits: databases.available false, max_databases 0 (api.env SAKALA_DATABASE_DEFAULT_MAX_COUNT=0)"
     fi
 }
 
@@ -512,6 +533,7 @@ deploy_project() {
     deployment=$(api_json "201 202" POST "/api/v1/app/projects/$1/deployments" \
         -H "Idempotency-Key: $2" --data "$(jq -cn --arg branch "$branch" '{branch: $branch}')")
     deployment_id=$(jq -r '.data.id' <<< "$deployment")
+    printf '%s\n' "$deployment_id" > "$state/last-deployment"
     pass "deployment $deployment_id queued"
     wait_deployment "$1" "$deployment_id"
     pass "deployment succeeded"
@@ -539,6 +561,111 @@ check_project_runtime() {
             fail "The project container has runtime runsc, but its kernel is not gVisor."
         pass "the project container's kernel is gVisor (dmesg: Starting gVisor)"
     fi
+}
+
+project_runtime_status() { api_json 200 GET "/api/v1/app/projects/$1" | jq -r '.data.runtime_status'; }
+project_running() { [ "$(project_runtime_status "$1")" = running ]; }
+
+# set_idle_sleep <minutes or empty>: the operator's way, a line in api.local.env, then
+# Compose recreates the API containers. Empty removes the line again.
+set_idle_sleep() {
+    local file=/etc/sakala/secrets/api.local.env
+    sed -i '/^SAKALA_PROJECT_IDLE_SLEEP_MINUTES=/d' "$file"
+    [ -z "$1" ] || printf 'SAKALA_PROJECT_IDLE_SLEEP_MINUTES=%s\n' "$1" >> "$file"
+    sc up -d --wait api reverb queue scheduler > "$state/compose-up.log" 2>&1 || {
+        cat "$state/compose-up.log" >&2
+        fail "sakala-compose up after changing api.local.env failed."
+    }
+    retry 30 2 https_ok "https://api.$domain/up" || fail "The API did not come back after changing api.local.env."
+}
+
+phase_sleep() {
+    [ -s "$ca" ] || fetch_ca || fail "No local CA root certificate; run the verify phase first."
+    local project_id host slug wake_url limits status i page
+    project_id=$(sed -n 1p "$state/project")
+    host=$(sed -n 2p "$state/project")
+    slug=${host%%.*}
+    wake_url="https://api.$domain/api/v1/public/projects/$slug/wake"
+
+    step "Turning idle sleep on with a one-minute window (api.local.env)"
+    set_idle_sleep 1
+    login
+    limits=$(api_json 200 GET /api/v1/app/pilot-limits)
+    [ "$(jq -r '.data.project_idle_sleep_minutes' <<< "$limits")" = 1 ] ||
+        fail "GET /api/v1/app/pilot-limits reports project_idle_sleep_minutes $(jq -r '.data.project_idle_sleep_minutes' <<< "$limits"), expected 1."
+    pass "pilot limits: project_idle_sleep_minutes 1"
+
+    # No request to the project from here on: any request would keep it awake.
+    step "Waiting for the project to sleep, without visiting it"
+    status=''
+    for ((i = 0; i < 72; i++)); do
+        status=$(project_runtime_status "$project_id")
+        [ "$status" = sleeping ] && break
+        sleep 5
+    done
+    [ "$status" = sleeping ] || fail "The project is still $status after 6 minutes with idle sleep at 1 minute."
+    pass "runtime_status sleeping after about $((i * 5)) seconds of polling"
+    [ -z "$(docker ps -q --filter label=dev.sakala.managed=true)" ] ||
+        fail "The project is sleeping, but its container still runs: $(docker ps --filter label=dev.sakala.managed=true --format '{{.Names}}')"
+    pass "no project container runs"
+
+    # Off again before waking, so the woken project is not put back to sleep and the
+    # later phases see the installation as installed. Waking does not need it on.
+    step "Turning idle sleep off again"
+    set_idle_sleep ''
+    login
+    [ "$(api_json 200 GET /api/v1/app/pilot-limits | jq -r '.data.project_idle_sleep_minutes')" = 0 ] ||
+        fail "Idle sleep is still on after removing it from api.local.env."
+    pass "pilot limits: project_idle_sleep_minutes 0"
+
+    step "The sleeping project answers with the agent's waiting page"
+    page=$(curl -sS --max-time 20 --cacert "$ca" -w '\n%{http_code}' "https://$host/") || fail "https://$host/ did not answer."
+    [ "${page##*$'\n'}" = 503 ] || fail "https://$host/ answered ${page##*$'\n'} while sleeping, expected 503."
+    grep -qF "$wake_url" <<< "$page" || fail "The waiting page does not ask $wake_url to wake the project: ${page:0:500}"
+    pass "https://$host/ 503 with a wake request to $wake_url"
+
+    step "A browser on the waiting page wakes the project"
+    prepare_browser
+    HOME="$state/browser-home" PROJECT_URL="https://$host/" WAKE_URL="$wake_url" \
+        CHROME_CHANNEL="$browser_channel" node "$state/console-browser/wake.mjs" ||
+        fail "The waiting page did not wake the project in a browser; see the lines above."
+    retry 30 2 project_running "$project_id" ||
+        fail "The project is $(project_runtime_status "$project_id") after waking, expected running."
+    pass "runtime_status running"
+    fetch_project "$host"
+    check_project_runtime
+}
+
+phase_reuse() {
+    [ -s "$ca" ] || fetch_ca || fail "No local CA root certificate; run the verify phase first."
+    local project_id host previous deployment build
+    project_id=$(sed -n 1p "$state/project")
+    host=$(sed -n 2p "$state/project")
+    previous=$(cat "$state/last-deployment")
+    login
+
+    step "The agent offers image reuse and workload metrics"
+    local capabilities
+    capabilities=$(agent_status)
+    if ! grep -qF '"image-reuse"' <<< "$capabilities" || ! grep -qF '"workload-metrics"' <<< "$capabilities"; then
+        fail "The agent does not advertise image-reuse and workload-metrics: $capabilities"
+    fi
+    pass "capabilities include image-reuse and workload-metrics"
+
+    deploy_project "$project_id" "e2e-reuse-$project_id"
+    deployment=$(api_json 200 GET "/api/v1/app/projects/$project_id/deployments/$(cat "$state/last-deployment")")
+    build=$(jq -c '.data.build' <<< "$deployment")
+    if [ "$(jq -r '.data.commit_sha' <<< "$deployment")" != \
+        "$(api_json 200 GET "/api/v1/app/projects/$project_id/deployments/$previous" | jq -r '.data.commit_sha')" ]; then
+        note "the branch moved since the last deployment, so a build was expected; build: $build"
+    else
+        [ "$(jq -r '.mode' <<< "$build")" = reused ] || fail "The redeploy of the live commit built instead of reusing the image: $build"
+        [ "$(jq -r '.image_source_deployment_id' <<< "$build")" = "$previous" ] ||
+            fail "The redeploy reused another deployment's image than the live one ($previous): $build"
+        pass "build: mode reused, image from deployment $previous"
+    fi
+    fetch_project "$host"
+    check_project_runtime
 }
 
 sha() { sha256sum "$1" | cut -d' ' -f1; }
@@ -684,13 +811,13 @@ PY
 # tests/upgrade-e2e.sh sources this file for its functions and runs its own phases.
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     case ${1:-} in
-        prepare | install | verify | deploy | upgrade | uninstall | diagnostics)
+        prepare | install | verify | deploy | sleep | reuse | upgrade | uninstall | diagnostics)
             phase=$1
             shift
             "phase_$phase" "$@"
             ;;
         *)
-            sed -n '3,26p' "$0" | sed 's/^# \{0,1\}//'
+            sed -n '3,30p' "$0" | sed 's/^# \{0,1\}//'
             exit 2
             ;;
     esac
