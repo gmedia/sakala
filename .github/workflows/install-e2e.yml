@@ -1,6 +1,7 @@
 # Installs Sakala for real on a fresh GitHub-hosted Ubuntu 24.04 VM (passwordless
 # sudo, systemd, Docker already installed), deploys a project from a public
-# repository under gVisor, then runs upgrade.sh and uninstall.sh. The steps are
+# repository under gVisor, lets it fall asleep and wakes it from a browser,
+# redeploys it from the live image, then runs upgrade.sh and uninstall.sh. The steps are
 # phases of tests/install-e2e.sh, so a red step names the phase that failed.
 #
 # The runner has no public DNS name, so the installer runs with --tls internal
@@ -49,7 +50,7 @@ jobs:
   install:
     name: Install, deploy, upgrade, uninstall
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v7
         with:
@@ -69,6 +70,12 @@ jobs:
 
       - name: Deploy a project end to end
         run: sudo -E tests/install-e2e.sh deploy
+
+      - name: Idle sleep, then a browser wakes the project
+        run: sudo -E tests/install-e2e.sh sleep
+
+      - name: Redeploy that reuses the live image
+        run: sudo -E tests/install-e2e.sh reuse
 
       - name: upgrade.sh
         run: sudo -E tests/install-e2e.sh upgrade

@@ -13,6 +13,9 @@ Group=sakala-agent
 # which is the accepted cost of a single-node install; see README.md.
 SupplementaryGroups=docker
 EnvironmentFile=/etc/sakala/agent.env
+# The operator's own settings, written once by install.sh and never rewritten.
+# systemd reads it as root, so it can stay 0600 in secrets/.
+EnvironmentFile=-/etc/sakala/secrets/agent.local.env
 EnvironmentFile=/etc/sakala/secrets/agent-credentials.env
 Environment=DOCKER_HOST=unix:///var/run/docker.sock
 # The agent reports $HOSTNAME in heartbeats; systemd does not export it.

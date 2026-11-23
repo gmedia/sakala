@@ -55,7 +55,7 @@ else
 fi
 
 mode_is 700 /etc/sakala/secrets
-for file in generated.env api.env database.env storage.env api.local.env backup.age-recipients; do
+for file in generated.env api.env database.env storage.env api.local.env agent.local.env backup.age-recipients; do
     mode_is 600 "/etc/sakala/secrets/$file"
 done
 mode_is 640 /etc/sakala/secrets/github-app.pem
@@ -75,6 +75,10 @@ contains /etc/sakala/agent.env 'SAKALA_API_URL=http://127.0.0.1:8100'
 contains /etc/sakala/agent.env 'SAKALA_PROJECT_DOMAIN_SUFFIXES=run.sakala.example.com'
 contains /etc/sakala/agent.env 'SAKALA_PUBLIC_API_URL=https://api.sakala.example.com'
 contains /etc/sakala/secrets/api.env 'SAKALA_PROJECT_MAX_BUILDS_PER_HOUR=20'
+contains /etc/sakala/secrets/api.env 'SAKALA_DATABASE_DEFAULT_MAX_COUNT=0'
+lacks /etc/sakala/agent.env 'SAKALA_DATABASE_DRIVER'
+grep -q '^SAKALA_' /etc/sakala/secrets/agent.local.env && fail "agent.local.env sets a value by default" || pass "agent.local.env sets nothing by default"
+contains /etc/systemd/system/sakala-agent.service 'EnvironmentFile=-/etc/sakala/secrets/agent.local.env'
 lacks /etc/sakala/agent.env '${'
 contains /etc/sakala/edge/run-tls.caddy 'on_demand'
 contains /etc/docker/daemon.json '"runsc"'

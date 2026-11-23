@@ -501,6 +501,9 @@ EOF
         SAKALA_DOMAIN SAKALA_REVERB_APP_KEY
     [ -e "$SAKALA_SECRETS_DIR/api.local.env" ] ||
         write_file "$SAKALA_SECRETS_DIR/api.local.env" 0600 < "$SAKALA_HOME/templates/api.local.env.template"
+    # The agent's counterpart, read by sakala-agent.service after agent.env.
+    [ -e "$SAKALA_SECRETS_DIR/agent.local.env" ] ||
+        write_file "$SAKALA_SECRETS_DIR/agent.local.env" 0600 < "$SAKALA_HOME/templates/agent.local.env.template"
     # Read by uid 82 (www-data) in the API image once a GitHub App key is pasted in.
     [ -e "$SAKALA_SECRETS_DIR/github-app.pem" ] || install -m 0640 -o root -g 82 /dev/null "$SAKALA_SECRETS_DIR/github-app.pem"
 
