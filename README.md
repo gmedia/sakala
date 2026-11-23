@@ -72,7 +72,9 @@ Yang dilakukannya, berurutan: memeriksa OS dan resource, memasang paket dasar, D
 
 Setelah selesai, buka `https://app.<domain>` dan login dengan email serta kata sandi yang dicetak. Simpan kata sandi itu, lalu hapus `/etc/sakala/secrets/initial-admin-password`. Sertifikat diminta saat tiap hostname pertama kali dibuka, jadi kunjungan pertama bisa lebih lambat beberapa detik.
 
-Pengaturan lanjutan, seperti SMTP, GitHub App, login Google, batas build per jam, replika, sleep otomatis, release command, redeploy tanpa build, metrik, dan database terkelola, ada di [docs/configuration.md](docs/configuration.md). Pengaturan API ditulis di `/etc/sakala/secrets/api.local.env` dan pengaturan agent di `/etc/sakala/secrets/agent.local.env`; script tidak pernah menimpa keduanya. Tanpa SMTP, email hanya masuk ke log API.
+Pengaturan lanjutan, seperti SMTP, GitHub App, login Google, batas build per jam, replika, sleep otomatis, release command, redeploy tanpa build, metrik, dan database terkelola, ada di [docs/configuration.md](docs/configuration.md). Pengaturan API ditulis di `/etc/sakala/secrets/api.local.env`, pengaturan agent di `/etc/sakala/secrets/agent.local.env`, dan tautan Console (panduan, dokumen hukum, email banding) di `/etc/sakala/secrets/console.local.env`; script tidak pernah menimpa ketiganya. Tanpa SMTP, email hanya masuk ke log API.
+
+Console menautkan syarat layanan, kebijakan penggunaan wajar, dan pemberitahuan privasi Sakala hosted di `https://sakala.dev` sampai kamu mengisi tautan dokumenmu sendiri, dan installer memperingatkannya di akhir setiap run. Dokumen itu tidak berlaku untuk servermu, jadi terbitkan dokumenmu sendiri sebelum membuka pendaftaran untuk orang lain ([Tautan Console](docs/configuration.md#tautan-console)).
 
 ### Replika dan sleep otomatis
 
@@ -278,7 +280,7 @@ Log semua komponen: `sudo sakala-compose logs --tail 100`.
 - **Tanpa filter lalu lintas keluar.** Aplikasi yang di-deploy bisa menghubungi alamat apa pun yang dijangkau server, termasuk port host dan jaringan privat di sekitarnya. Sakala hosted memasang filter egress di node runtime-nya; di sini belum, jadi batasi sendiri lewat firewall host kalau server berada di jaringan yang perlu dilindungi.
 - **Database terkelola** belum dipasang installer ([Database terkelola](#database-terkelola-mati)).
 - **Mengganti domain** setelah instalasi belum didukung.
-- **Landing page** Sakala tidak ikut dipasang. Console masih menautkan dokumen hukum dan panduan di `https://sakala.dev`, karena alamatnya tertanam di image Console ([Dokumen hukum](docs/configuration.md#dokumen-hukum)).
+- **Landing page** Sakala tidak ikut dipasang. Console v0.12.0, yang dipin sekarang, masih menautkan dokumen hukum dan panduan di `https://sakala.dev`. Tautan di `console.local.env` berlaku setelah pin pindah ke rilis Console yang memuat sakala-console #168 ([Tautan Console](docs/configuration.md#tautan-console)).
 
 ## Kontribusi dan pengujian
 
@@ -319,7 +321,9 @@ This repository installs Sakala on your own server. It is the distribution, not 
 
 **Managed databases are off.** The managed PostgreSQL databases of API v0.9.0 and agent v0.12.0 are not offered here: `api.env` sets `SAKALA_DATABASE_DEFAULT_MAX_COUNT=0`, the agent runs no database role, and the Console says databases are not available on this server. Apps can still use a database you run yourself through environment variables. Turning them on takes a separate PostgreSQL instance with TLS and its own backups; [docs/configuration.md](docs/configuration.md#database-terkelola) sketches the steps, which this repository does not test yet.
 
-**Your own settings.** API settings go in `/etc/sakala/secrets/api.local.env` (`sudo sakala-compose up -d` after editing) and agent settings in `/etc/sakala/secrets/agent.local.env` (`sudo systemctl restart sakala-agent`). The scripts never rewrite either file.
+**Your own settings.** API settings go in `/etc/sakala/secrets/api.local.env` (`sudo sakala-compose up -d` after editing), agent settings in `/etc/sakala/secrets/agent.local.env` (`sudo systemctl restart sakala-agent`), and the Console's links in `/etc/sakala/secrets/console.local.env` (`sudo sakala-compose up -d console`). The scripts never rewrite any of them.
+
+**Legal links.** Until you set `PUBLIC_TERMS_URL`, `PUBLIC_ACCEPTABLE_USE_URL`, and `PUBLIC_PRIVACY_URL` in `console.local.env`, the Console links hosted Sakala's terms, acceptable use policy, and privacy notice on `https://sakala.dev`, which do not govern your server; the installer warns about it at the end of every run. An empty value means the same as no value, and the Console still starts. `PUBLIC_ABUSE_EMAIL`, the address for appealing a suspended project, defaults to the admin email, like the API's `SAKALA_ABUSE_EMAIL`. `PUBLIC_DOCS_URL` can stay unset: hosted Sakala's guides cover this software. Values the Console would refuse stop `install.sh` before anything changes. The pinned Console v0.12.0 ignores all five; they take effect once `versions.env` pins a Console release with sakala-console #168 ([docs/configuration.md](docs/configuration.md#tautan-console)).
 
 **Install.**
 
@@ -351,6 +355,6 @@ It is idempotent: rerunning keeps the generated secrets, the agent credentials, 
 
 **Troubleshooting.** `sudo sakala-compose logs edge` for certificates, `journalctl -u sakala-agent` for deployments, `sudo /opt/sakala/scripts/backup.sh --check` for backups. The table above lists the common cases.
 
-**Current limits.** One server means the control plane and user apps share a kernel, with gVisor as the main boundary. Let's Encrypt issuance, a real server with public DNS, and restoring onto a real server are not tested yet (restore is tested into a scratch database only). x86_64 only. DNS mode has a pinned module for Cloudflare only. No monitoring. No egress filter: deployed apps can reach anything the server can, including host ports and nearby private networks, which hosted Sakala filters on its runtime nodes; restrict it with a host firewall if the server sits on a network that needs protecting. Managed databases are not installed. Changing the domain after install is not supported. The Sakala landing page is not part of self-host, and the Console still links the legal documents and guides on `https://sakala.dev`, because those addresses are built into the Console image.
+**Current limits.** One server means the control plane and user apps share a kernel, with gVisor as the main boundary. Let's Encrypt issuance, a real server with public DNS, and restoring onto a real server are not tested yet (restore is tested into a scratch database only). x86_64 only. DNS mode has a pinned module for Cloudflare only. No monitoring. No egress filter: deployed apps can reach anything the server can, including host ports and nearby private networks, which hosted Sakala filters on its runtime nodes; restrict it with a host firewall if the server sits on a network that needs protecting. Managed databases are not installed. Changing the domain after install is not supported. The Sakala landing page is not part of self-host, and the pinned Console v0.12.0 still links the legal documents and guides on `https://sakala.dev`; the links in `console.local.env` take effect with the first pinned Console release that has sakala-console #168.
 
 License: Apache-2.0.

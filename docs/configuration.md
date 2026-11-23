@@ -16,6 +16,8 @@ sudo systemctl restart sakala-agent
 
 Jangan menimpa nilai yang diambil `agent.env` dari domainmu, seperti `SAKALA_PROJECT_DOMAIN_SUFFIXES` dan `SAKALA_PUBLIC_API_URL`.
 
+Tautan yang ditampilkan Console (panduan, dokumen hukum, dan email banding) diatur di `/etc/sakala/secrets/console.local.env`, yang dibaca setelah `console.env`; lihat [Tautan Console](#tautan-console).
+
 ## Email
 
 Tanpa mailer, email verifikasi dan reset kata sandi hanya muncul di log API (`sudo sakala-compose logs api`). Admin pertama sudah terverifikasi, jadi bisa login, tetapi orang lain yang mendaftar tidak bisa memverifikasi emailnya. Isi SMTP sebelum mengundang orang lain:
@@ -171,25 +173,49 @@ Untuk mematikannya lagi, hapus database yang ada dari Console dulu, lalu kembali
 
 Footer setiap email menautkan kebijakan privasi dan syarat layanan di `<SAKALA_LANDING_URL>/privasi` dan `/syarat`, dan header-nya memuat logo dari `SAKALA_MAIL_LOGO_URL`. Keduanya default ke situs Sakala hosted (`https://sakala.dev`). Kalau instalasimu punya kebijakan sendiri, isi keduanya di `api.local.env`; logonya PNG 280 x 118 lewat HTTPS.
 
+## Tautan Console
+
+Console menautkan beberapa hal yang tidak ia terbitkan sendiri: panduan, syarat layanan, kebijakan penggunaan wajar, pemberitahuan privasi, dan alamat email untuk banding project yang ditangguhkan. Semuanya diisi di `/etc/sakala/secrets/console.local.env`, file yang dibaca setelah `console.env` dan tidak pernah ditimpa script. Instalasi lama mendapat file ini (berisi komentar saja) dari `upgrade.sh`. Setelah mengubahnya:
+
+```bash
+sudo sakala-compose up -d console
+```
+
+| Variabel                    | Isi                                                     | Kalau tidak diisi                      |
+| --------------------------- | ------------------------------------------------------- | -------------------------------------- |
+| `PUBLIC_TERMS_URL`          | URL lengkap syarat layanan; boleh memakai `?` dan `#`   | `https://sakala.dev/syarat`            |
+| `PUBLIC_ACCEPTABLE_USE_URL` | URL lengkap kebijakan penggunaan wajar                  | `https://sakala.dev/penggunaan-wajar`  |
+| `PUBLIC_PRIVACY_URL`        | URL lengkap pemberitahuan privasi                       | `https://sakala.dev/privasi`           |
+| `PUBLIC_ABUSE_EMAIL`        | alamat email untuk banding project yang ditangguhkan    | email admin, ditulis ke `console.env`  |
+| `PUBLIC_DOCS_URL`           | URL dasar panduan, tanpa `?` atau `#`                   | `https://sakala.dev/docs`              |
+
+Mengosongkan variabel (`PUBLIC_TERMS_URL=`) sama dengan tidak mengisinya: Console tetap start dan memakai tautan Sakala hosted. Console tidak punya pilihan untuk menyembunyikan tautan hukum, jadi selama ketiganya belum diisi, halaman daftar dan layar persetujuan menautkan dokumen Sakala hosted, yang tidak berlaku untuk server ini. `install.sh` dan `upgrade.sh` memperingatkan hal itu di akhir setiap run sampai ketiganya diisi. Terbitkan dokumenmu sendiri lebih dulu ([Dokumen hukum](#dokumen-hukum)).
+
+Installer memeriksa nilainya sebelum mengubah apa pun di server, dengan aturan yang sama seperti Console: URL harus `http://` atau `https://` dengan nama host biasa, tanpa spasi atau tanda kutip di dalamnya, dan alamat email harus satu alamat. Nilai yang ditolak menghentikan `install.sh` dengan pesan yang menyebut variabelnya. Tanpa pemeriksaan ini, Console yang menolak nilainya berhenti start di tengah upgrade, setelah database dimigrasi.
+
+`PUBLIC_ABUSE_EMAIL` default ke email admin, sama seperti `SAKALA_ABUSE_EMAIL` di `api.env`. Kalau kamu mengganti `SAKALA_ABUSE_EMAIL` di `api.local.env`, isi alamat yang sama di sini. Panduan Sakala hosted berlaku juga untuk instalasi ini, jadi `PUBLIC_DOCS_URL` cukup dibiarkan kosong. Kalau kamu menerbitkan salinan sendiri, struktur halaman dan anchor-nya harus sama dengan docs Sakala, karena Console menautkannya langsung.
+
+Batasan: Console v0.12.0, yang dipin sekarang, belum membaca kelima variabel ini dan selalu menautkan `https://sakala.dev`. Pengaturannya mulai berlaku setelah `versions.env` memin rilis Console yang memuat sakala-console #168. Mengisinya dari sekarang aman, karena v0.12.0 mengabaikannya.
+
 ## Dokumen hukum
 
 Saat mendaftar, setiap akun menerima syarat layanan dan kebijakan penggunaan wajar, dan mengakui pemberitahuan privasi. API mencatat versi yang diterima (`legal_acceptances`) dan melaporkannya ke Console. Di instalasi ini versi itu ditetapkan di `api.env`: `syarat-v1`, `penggunaan-wajar-v1`, dan `privasi-v1`, tanpa tanggal berlaku. Sejak v0.11.0, default API sendiri mengikuti pemberitahuan privasi Sakala hosted, `privasi-v2`, yang berlaku di sana mulai 30 November 2026 00.00 WIB. Tanpa nilai di `api.env`, instalasi self-host ikut berganti versi pada tanggal itu walaupun dokumen privasinya bukan milikmu.
 
 Sebagai pengelola instalasi, kamu yang bertanggung jawab atas data pengguna di server ini. Kalau kamu menerbitkan dokumen sendiri:
 
-1. Terbitkan dokumennya di situsmu dengan path `/syarat`, `/penggunaan-wajar`, dan `/privasi`, lalu isi `SAKALA_LANDING_URL` di `api.local.env` supaya email menautkan situsmu.
+1. Terbitkan dokumennya di situsmu dengan path `/syarat`, `/penggunaan-wajar`, dan `/privasi`, lalu isi `SAKALA_LANDING_URL` di `api.local.env` supaya email menautkan situsmu, dan `PUBLIC_TERMS_URL`, `PUBLIC_ACCEPTABLE_USE_URL`, serta `PUBLIC_PRIVACY_URL` di `console.local.env` supaya Console juga menautkannya ([Tautan Console](#tautan-console)).
 2. Beri nama versi di `api.local.env`, misalnya `SAKALA_LEGAL_PRIVACY_NOTICE_VERSION=kampus-privasi-v1`, lalu `sudo sakala-compose up -d`. Versi syarat (`SAKALA_LEGAL_TERMS_VERSION`) atau penggunaan wajar (`SAKALA_LEGAL_ACCEPTABLE_USE_VERSION`) yang baru membuat setiap akun diminta menerima lagi di Console sebelum lanjut. Versi pemberitahuan privasi yang baru hanya dicatat untuk pengakuan berikutnya.
 3. Untuk mengumumkan versi privasi sebelum berlaku, isi juga `SAKALA_LEGAL_PRIVACY_NOTICE_EFFECTIVE_AT` (misalnya `2027-01-01T00:00:00+07:00`) dan `SAKALA_LEGAL_PRIVACY_NOTICE_PREVIOUS_VERSION`; sampai tanggal itu API tetap mencatat versi sebelumnya.
 
 Perintah `legal:announce-change` dari API v0.11.0 tidak pernah berjalan otomatis. Ringkasan emailnya hanya ada untuk dokumen Sakala hosted, jadi untuk versi buatanmu perintah itu menolak berjalan; umumkan perubahan dengan caramu sendiri.
 
-Batasan: Console v0.12.0 masih menautkan halaman daftar dan layar persetujuan ke dokumen di `https://sakala.dev`, karena alamatnya tertanam di image Console dan belum bisa diatur dari `console.env`.
+Batasan: Console v0.12.0 masih menautkan halaman daftar dan layar persetujuan ke dokumen di `https://sakala.dev`. Tautan di `console.local.env` baru berlaku setelah `versions.env` memin rilis Console yang memuat sakala-console #168 ([Tautan Console](#tautan-console)).
 
 ## Domain Console dan project
 
 Dua file berikut ditulis ulang installer dari domainmu setiap `install.sh` atau `upgrade.sh` berjalan, jadi jangan diedit:
 
-- `/etc/sakala/console.env` berisi `PUBLIC_API_URL`, `PUBLIC_APP_URL`, dan `PUBLIC_REVERB_*`. Console membacanya saat container start dan menimpa nilai yang tertanam di image, jadi browser memanggil `https://api.<domain>`. Semua nilainya publik; `PUBLIC_REVERB_KEY` adalah app key publik Reverb, bukan secret-nya.
+- `/etc/sakala/console.env` berisi `PUBLIC_API_URL`, `PUBLIC_APP_URL`, `PUBLIC_REVERB_*`, dan `PUBLIC_ABUSE_EMAIL` (email admin). Console membacanya saat container start dan menimpa nilai yang tertanam di image, jadi browser memanggil `https://api.<domain>`. Semua nilainya publik; `PUBLIC_REVERB_KEY` adalah app key publik Reverb, bukan secret-nya. Tautan panduan dan dokumen hukum diisi di `console.local.env` ([Tautan Console](#tautan-console)).
 - `/etc/sakala/agent.env` berisi `SAKALA_PROJECT_DOMAIN_SUFFIXES=run.<domain>`, nilai yang sama dengan `SAKALA_PROJECT_DEFAULT_DOMAIN` di `api.env`. Agent menolak deploy dengan `invalid_runtime_command` untuk domain di luar suffix itu. File yang sama berisi `SAKALA_PUBLIC_API_URL=https://api.<domain>`, alamat yang dipakai halaman project yang sedang tidur untuk membangunkannya.
 
 Keduanya wajib. Tanpa `SAKALA_PROJECT_DEFAULT_DOMAIN`, API v0.6.0 ke atas memberi project baru alamat `<nama>.sakala.app` milik Sakala hosted, dan tanpa `SAKALA_PROJECT_DOMAIN_SUFFIXES`, agent v0.8.0 ke atas hanya menerima domain Sakala hosted. Jangan menimpa salah satunya di `api.local.env` atau `agent.local.env`.

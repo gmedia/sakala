@@ -67,6 +67,18 @@ valid_email() {
     [[ $1 =~ ^[A-Za-z0-9._%+-]+@([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$ ]]
 }
 
+# A link the Console shows (console.local.env), held to the rules its entrypoint
+# applies since sakala-console #168: an http or https URL with a plain host name,
+# an optional port, and a path, query, or fragment of URL-safe characters only. A
+# value the entrypoint refuses stops the Console container.
+valid_console_link() {
+    local allowed='^[A-Za-z0-9._~:/%?#=&+-]+$'
+    local url='^https?://[A-Za-z0-9.-]+(:([0-9]{1,5}))?(/[A-Za-z0-9._~:/%-]*)?$'
+    [[ $1 =~ $allowed ]] || return 1
+    [[ ${1%%[?#]*} =~ $url ]] || return 1
+    [ -z "${BASH_REMATCH[2]}" ] || { [ "${BASH_REMATCH[2]}" -ge 1 ] && [ "${BASH_REMATCH[2]}" -le 65535 ]; }
+}
+
 valid_age_recipient() {
     [[ $1 =~ ^age1[02-9ac-hj-np-z]{58}$ ]]
 }
