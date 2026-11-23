@@ -95,6 +95,13 @@ valid_trusted_proxies() {
     done
 }
 
+# A cap on what one gVisor sandbox writes to its root filesystem, in the form runsc
+# takes after --overlay2=root:self,size= (512m, 1g, 2G), or none for no cap. The
+# same check as sakala-deployment's scripts/install-gvisor.sh, which hosted Sakala uses.
+valid_gvisor_overlay_size() {
+    [ "$1" = none ] || [[ $1 =~ ^[1-9][0-9]*[kmgKMG]$ ]]
+}
+
 # Reads KEY=value lines without evaluating them, so a value is never run as code.
 env_get() {
     local file=$1 key=$2
