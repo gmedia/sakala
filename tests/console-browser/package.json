@@ -4,6 +4,6 @@
   "description": "Opens the installed Console in Chrome during tests/install-e2e.sh and checks which API it calls.",
   "type": "module",
   "dependencies": {
-    "playwright-core": "1.65.0"
+    "playwright-core": "1.65.1"
   }
 }
