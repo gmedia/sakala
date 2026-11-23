@@ -78,6 +78,21 @@ Nilai 20 adalah default API, ditulis eksplisit di `api.env` sebagai `SAKALA_PROJ
 - Untuk semua workspace tanpa profil, isi angka lain di `api.local.env`, misalnya `SAKALA_PROJECT_MAX_BUILDS_PER_HOUR=50`, lalu `sudo sakala-compose up -d`. `0` mematikan batas ini.
 - Untuk sebagian workspace, isi "Build per jam" (`max_builds_per_hour`, 1 sampai 1000) di limit profile workspace itu. Kosong berarti ikut nilai global.
 
+## Batas tulis disk project
+
+Setiap project berjalan di bawah gVisor, dan semua yang ditulis aplikasi ke filesystem container-nya (file upload, cache, log ke file, SQLite) disimpan gVisor di satu file di samping rootfs container, di disk server yang sama dengan database control plane. Installer membatasi file itu 1 GB per container: `runsc` didaftarkan di `/etc/docker/daemon.json` dengan `--overlay2=root:self,size=1g`, angka yang sama dengan Sakala hosted. Aplikasi yang menulis lebih dari itu mendapat error `No space left on device` (ENOSPC), sementara server dan project lain tetap jalan. Tanpa batas, satu project bisa memenuhi disk dan ikut menghentikan PostgreSQL, backup, dan semua project lain.
+
+Batasnya diatur di `/etc/sakala/sakala.env`:
+
+```bash
+sudo sed -i 's/^SAKALA_GVISOR_OVERLAY_SIZE=.*/SAKALA_GVISOR_OVERLAY_SIZE=2g/' /etc/sakala/sakala.env
+sudo ./install.sh
+```
+
+Nilainya angka dengan satuan `k`, `m`, atau `g` (misalnya `512m` atau `2g`), atau `none` untuk tanpa batas. Installer menolak nilai lain sebelum mengubah apa pun. Hitung dengan jumlah container: dengan 20 container aktif dan batas 1 GB, project bisa memakai sampai 20 GB disk. `install.sh` mendaftarkan ulang `runsc` dan me-reload Docker hanya kalau nilainya berubah. Container yang sedang berjalan tetap memakai batas lamanya sampai di-deploy ulang, di-restart, atau dibangunkan.
+
+Batas ini tidak mencakup memori (`SAKALA_MAX_CONTAINER_MEMORY_MB`) dan tidak membuat file bertahan: isi filesystem container tetap hilang saat project di-deploy ulang, di-restart, atau tidur. Aplikasi yang perlu menyimpan file sebaiknya memakai object storage atau database.
+
 ## Replika
 
 Satu project bisa berjalan sebagai beberapa container dari image yang sama. Runtime router membagi request ke semuanya (`least_conn`), mencoba replika lain kalau satu gagal, dan agent menyalakan lagi replika yang berhenti. Deploy berjalan bergulir: route baru pindah setelah semua replika baru siap. Semua replika berjalan di server ini, jadi replika melindungi dari aplikasi yang crash atau di-restart, bukan dari server yang mati.
@@ -104,7 +119,7 @@ Replika hanya cocok untuk aplikasi stateless. File yang ditulis ke disk containe
 
 Sleep otomatis menghentikan project yang tidak menerima request selama sekian menit, dan menyalakannya lagi saat diminta. Container dan route-nya disimpan, jadi alamat project tetap. Di instalasi ini sleep mati: `api.env` berisi `SAKALA_PROJECT_IDLE_SLEEP_MINUTES=0`.
 
-Pengunjung yang membuka project yang sedang tidur melihat halaman tunggu dari agent. Halaman itu meminta API membangunkan project lewat `https://api.<domain>`, yaitu `SAKALA_PUBLIC_API_URL` di `agent.env`, lalu memuat ulang dirinya sampai project menyala. Agent sendiri tetap menghubungi API lewat loopback (`SAKALA_API_URL=http://127.0.0.1:8100`); alamat publik hanya dipakai untuk permintaan dari browser. Pemilik project juga bisa menyalakannya dari Console. Halaman itu, dan halaman untuk project yang tidak boleh dibangunkan, menautkan pemilik project ke `https://app.<domain>` lewat `SAKALA_PUBLIC_CONSOLE_URL` di `agent.env` (agent setelah v0.15.0).
+Pengunjung yang membuka project yang sedang tidur melihat halaman tunggu dari agent. Halaman itu meminta API membangunkan project lewat `https://api.<domain>`, yaitu `SAKALA_PUBLIC_API_URL` di `agent.env`, lalu memuat ulang dirinya sampai project menyala. Agent sendiri tetap menghubungi API lewat loopback (`SAKALA_API_URL=http://127.0.0.1:8100`); alamat publik hanya dipakai untuk permintaan dari browser. Pemilik project juga bisa menyalakannya dari Console. Halaman itu, dan halaman untuk project yang tidak boleh dibangunkan, menautkan pemilik project ke `https://app.<domain>` lewat `SAKALA_PUBLIC_CONSOLE_URL` di `agent.env` (sejak agent v0.16.0).
 
 Alamat di bawah `run.<domain>` yang tidak punya project, misalnya project yang sudah dihapus, dijawab router dengan halaman "Belum ada aplikasi di alamat ini" berstatus 404 yang menautkan Console yang sama. Halaman itu tidak menampilkan ulang alamatnya dan tidak pernah di-cache.
 
@@ -127,6 +142,12 @@ Sejak API v0.9.0 dan agent v0.14.0, redeploy commit yang sedang live tanpa perub
 
 Operator tidak perlu mengatur apa pun. Deployment dari sebelum upgrade belum punya sidik build, jadi redeploy konfigurasi pertama setelah upgrade masih build satu kali. Kalau image-nya tidak bisa dipakai, agent build seperti biasa dan deployment-nya mencatat alasannya.
 
+## Rollback dan restart
+
+Sejak API v0.11.0, agent v0.16.0, dan Console v0.12.0, anggota yang boleh deploy bisa mengembalikan project ke deployment sukses sebelumnya dari tab Riwayat ("Kembalikan ke versi ini"), dan menyalakan ulang container tanpa build dari menu Redeploy. Rollback ke versi tepat sebelum versi yang live memakai image yang masih disimpan agent, jadi tanpa build; versi yang lebih lama dibangun ulang dari commit-nya dan dihitung di batas build per jam. Setelah rollback, deploy otomatis dari push dijeda sampai pemilik menyalakannya lagi.
+
+Operator tidak perlu mengatur apa pun. Yang berubah di server: image GC agent kini menyimpan, per project, hanya image yang sedang dipakai dan satu image sebelumnya (bertag `previous`), berapa pun umurnya, lalu menghapus sisanya. Sebelumnya setiap image yang lebih muda dari tujuh hari ikut disimpan, jadi disk yang dipakai image project biasanya turun setelah upgrade. `SAKALA_IMAGE_GC_MAX_AGE_SECONDS` sudah tidak dipakai agent dan tidak lagi ditulis ke `agent.env`; kalau kamu mengisinya di `agent.local.env`, hapus saja, karena agent hanya menulis peringatan untuknya.
+
 ## Metrik project
 
 Tab Metrik di Console menampilkan CPU, memori, jumlah replika, dan restart setiap project. Agent mengambil sampel `docker stats` sekali per menit dan mengirimnya di heartbeat; API menyimpan rangkuman per menit selama 24 jam (`SAKALA_METRICS_MINUTE_RETENTION_HOURS`) dan per jam selama 30 hari (`SAKALA_METRICS_HOURLY_RETENTION_DAYS`), di database control plane. Tidak ada yang perlu dinyalakan, dan tidak ada port metrik yang dibuka.
@@ -141,7 +162,7 @@ Menyalakannya adalah langkah lanjutan yang belum diuji repository ini. Gambaran 
 
 1. Instance PostgreSQL 15 atau lebih baru yang terpisah, dijalankan dengan runc (bukan runsc), tidak dibuka ke internet, dengan batas memori. Container project harus bisa menjangkaunya di satu alamat, misalnya IP privat server. `pg_hba.conf` hanya menerima tenant lewat `hostssl` dengan `scram-sha-256` dari network project (pool Docker `172.16.0.0/12` dari installer), karena `DATABASE_URL` yang diberikan ke aplikasi memakai `sslmode=require`.
 2. Di `/etc/sakala/secrets/agent.local.env`: `SAKALA_DATABASE_DRIVER=postgres`, `SAKALA_DATABASE_ADMIN_DSN` ke instance itu sebagai superuser lewat socket Unix atau loopback, serta `SAKALA_DATABASE_PUBLIC_HOST` dan `SAKALA_DATABASE_PUBLIC_PORT`, alamat yang dijangkau container project. Lalu `sudo systemctl restart sakala-agent`. Agent mengiklankan `managed-postgres` dan API mulai melaporkan database tersedia.
-3. Di `api.local.env`: kuota untuk workspace tanpa limit profile, misalnya `SAKALA_DATABASE_DEFAULT_MAX_COUNT=2` dan `SAKALA_DATABASE_DEFAULT_MAX_STORAGE_MB=512`, lalu `sudo sakala-compose up -d`. Limit profile juga punya `max_databases` dan `max_database_storage_mb` untuk workspace tertentu, tetapi Console v0.11.0 belum menampilkan kedua kolom itu.
+3. Di `api.local.env`: kuota untuk workspace tanpa limit profile, misalnya `SAKALA_DATABASE_DEFAULT_MAX_COUNT=2` dan `SAKALA_DATABASE_DEFAULT_MAX_STORAGE_MB=512`, lalu `sudo sakala-compose up -d`. Untuk workspace tertentu, isi "Database" dan "Penyimpanan database (MB)" (`max_databases`, `max_database_storage_mb`) di bagian Opsional limit profile-nya (Console v0.12.0).
 4. Backup setiap database tenant sendiri, misalnya `pg_dump -Fc` terenkripsi age ke luar server.
 
 Untuk mematikannya lagi, hapus database yang ada dari Console dulu, lalu kembalikan kedua file.
@@ -149,6 +170,20 @@ Untuk mematikannya lagi, hapus database yang ada dari Console dulu, lalu kembali
 ## Tautan di email
 
 Footer setiap email menautkan kebijakan privasi dan syarat layanan di `<SAKALA_LANDING_URL>/privasi` dan `/syarat`, dan header-nya memuat logo dari `SAKALA_MAIL_LOGO_URL`. Keduanya default ke situs Sakala hosted (`https://sakala.dev`). Kalau instalasimu punya kebijakan sendiri, isi keduanya di `api.local.env`; logonya PNG 280 x 118 lewat HTTPS.
+
+## Dokumen hukum
+
+Saat mendaftar, setiap akun menerima syarat layanan dan kebijakan penggunaan wajar, dan mengakui pemberitahuan privasi. API mencatat versi yang diterima (`legal_acceptances`) dan melaporkannya ke Console. Di instalasi ini versi itu ditetapkan di `api.env`: `syarat-v1`, `penggunaan-wajar-v1`, dan `privasi-v1`, tanpa tanggal berlaku. Sejak v0.11.0, default API sendiri mengikuti pemberitahuan privasi Sakala hosted, `privasi-v2`, yang berlaku di sana mulai 30 November 2026 00.00 WIB. Tanpa nilai di `api.env`, instalasi self-host ikut berganti versi pada tanggal itu walaupun dokumen privasinya bukan milikmu.
+
+Sebagai pengelola instalasi, kamu yang bertanggung jawab atas data pengguna di server ini. Kalau kamu menerbitkan dokumen sendiri:
+
+1. Terbitkan dokumennya di situsmu dengan path `/syarat`, `/penggunaan-wajar`, dan `/privasi`, lalu isi `SAKALA_LANDING_URL` di `api.local.env` supaya email menautkan situsmu.
+2. Beri nama versi di `api.local.env`, misalnya `SAKALA_LEGAL_PRIVACY_NOTICE_VERSION=kampus-privasi-v1`, lalu `sudo sakala-compose up -d`. Versi syarat (`SAKALA_LEGAL_TERMS_VERSION`) atau penggunaan wajar (`SAKALA_LEGAL_ACCEPTABLE_USE_VERSION`) yang baru membuat setiap akun diminta menerima lagi di Console sebelum lanjut. Versi pemberitahuan privasi yang baru hanya dicatat untuk pengakuan berikutnya.
+3. Untuk mengumumkan versi privasi sebelum berlaku, isi juga `SAKALA_LEGAL_PRIVACY_NOTICE_EFFECTIVE_AT` (misalnya `2027-01-01T00:00:00+07:00`) dan `SAKALA_LEGAL_PRIVACY_NOTICE_PREVIOUS_VERSION`; sampai tanggal itu API tetap mencatat versi sebelumnya.
+
+Perintah `legal:announce-change` dari API v0.11.0 tidak pernah berjalan otomatis. Ringkasan emailnya hanya ada untuk dokumen Sakala hosted, jadi untuk versi buatanmu perintah itu menolak berjalan; umumkan perubahan dengan caramu sendiri.
+
+Batasan: Console v0.12.0 masih menautkan halaman daftar dan layar persetujuan ke dokumen di `https://sakala.dev`, karena alamatnya tertanam di image Console dan belum bisa diatur dari `console.env`.
 
 ## Domain Console dan project
 

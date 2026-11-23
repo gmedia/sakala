@@ -307,8 +307,29 @@ check_agent_ready() {
     pass "runsc registered with Docker and selected in agent.env ($(/usr/local/bin/runsc --version | head -n 1))"
 }
 
+# Every sandbox may write at most SAKALA_GVISOR_OVERLAY_SIZE (1g by default) to its
+# root filesystem: runsc is registered with the cap, and a container under runsc
+# that writes more gets ENOSPC instead of filling the server's disk.
+check_gvisor_overlay() {
+    step "runsc caps what a sandbox writes to its root filesystem at 1g"
+    local args image out
+    args=$(jq -c '.runtimes.runsc.runtimeArgs' /etc/docker/daemon.json)
+    [ "$args" = '["--platform=systrap","--overlay2=root:self,size=1g"]' ] ||
+        fail "runsc is registered with $args, expected --platform=systrap and --overlay2=root:self,size=1g."
+    grep -qx 'SAKALA_GVISOR_OVERLAY_SIZE=1g' /etc/sakala/sakala.env || fail "sakala.env does not record SAKALA_GVISOR_OVERLAY_SIZE=1g."
+    # The runtime router's image is on the server already and has BusyBox dd.
+    image=$(docker inspect --format '{{.Config.Image}}' "$(sc ps -q runtime-caddy)")
+    if out=$(docker run --rm --runtime runsc --network none --entrypoint sh "$image" \
+        -c 'dd if=/dev/zero of=/fill bs=1M count=1200 2>&1; status=$?; ls -l /fill; exit $status' 2>&1); then
+        fail "A container under runsc wrote 1200 MB to its root filesystem: $out"
+    fi
+    grep -qi 'no space left' <<< "$out" || fail "Writing 1200 MB under runsc failed, but not with ENOSPC: $out"
+    pass "1200 MB written to / under runsc stops with ENOSPC ($(grep -i 'no space' <<< "$out" | head -n 1))"
+}
+
 check_agent() {
     check_agent_ready
+    check_gvisor_overlay
     grep -qx "SAKALA_PROJECT_DOMAIN_SUFFIXES=run.$domain" /etc/sakala/agent.env ||
         fail "agent.env does not set SAKALA_PROJECT_DOMAIN_SUFFIXES=run.$domain."
     grep -qx "SAKALA_PROJECT_DEFAULT_DOMAIN=run.$domain" /etc/sakala/secrets/api.env ||

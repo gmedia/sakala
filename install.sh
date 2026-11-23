@@ -28,10 +28,16 @@ age_recipient=${SAKALA_AGE_RECIPIENT:-}
 tls_mode=${SAKALA_TLS_MODE:-}
 dns_provider=${SAKALA_DNS_PROVIDER:-}
 dns_module=${SAKALA_DNS_MODULE:-}
+gvisor_overlay_size=${SAKALA_GVISOR_OVERLAY_SIZE:-}
 assume_yes=0
 upgrade=0
 skip_resource_check=0
 edge_restart=0
+
+# What one project may write to its container's root filesystem under gVisor, the
+# same cap hosted Sakala sets. Without one, a single project can fill the disk the
+# control plane's database shares. SAKALA_GVISOR_OVERLAY_SIZE in sakala.env wins.
+default_gvisor_overlay_size=1g
 
 # Known single-token DNS modules, pinned. Any other provider works with
 # --dns-provider and --dns-module; see docs/tls.md.
@@ -109,6 +115,7 @@ collect_inputs() {
         tls_mode=${tls_mode:-$(env_get "$SAKALA_ENV_FILE" SAKALA_TLS_MODE)}
         dns_provider=${dns_provider:-$(env_get "$SAKALA_ENV_FILE" SAKALA_DNS_PROVIDER)}
         dns_module=${dns_module:-$(env_get "$SAKALA_ENV_FILE" SAKALA_DNS_MODULE)}
+        gvisor_overlay_size=${gvisor_overlay_size:-$(env_get "$SAKALA_ENV_FILE" SAKALA_GVISOR_OVERLAY_SIZE)}
     elif [ "$upgrade" -eq 1 ]; then
         die "$SAKALA_ENV_FILE not found. Run install.sh first."
     fi
@@ -151,6 +158,11 @@ collect_inputs() {
         *) die "--tls must be on-demand, dns, or internal, got: $tls_mode" ;;
     esac
 
+    # Checked here, before anything on the server changes.
+    gvisor_overlay_size=${gvisor_overlay_size:-$default_gvisor_overlay_size}
+    valid_gvisor_overlay_size "$gvisor_overlay_size" ||
+        die "SAKALA_GVISOR_OVERLAY_SIZE must be a size such as 512m or 2g, or none for no cap, got: $gvisor_overlay_size"
+
     node_name=$(env_get "$SAKALA_ENV_FILE" SAKALA_NODE_NAME)
     node_name=${node_name:-$(hostname -s | tr -c 'a-zA-Z0-9-\n' '-')}
 
@@ -158,6 +170,11 @@ collect_inputs() {
     info "Admin:    $email"
     info "TLS:      $tls_mode${dns_provider:+ ($dns_provider)}"
     info "Backups:  encrypted to $age_recipient"
+    if [ "$gvisor_overlay_size" = none ]; then
+        info "Projects: no cap on what one writes to its root filesystem (SAKALA_GVISOR_OVERLAY_SIZE=none)"
+    else
+        info "Projects: each writes at most $gvisor_overlay_size to its root filesystem"
+    fi
 }
 
 install_packages() {
@@ -309,19 +326,28 @@ install_gvisor() {
     fi
 
     # `runsc install` merges into a copy, and dockerd checks the result before it replaces the live file.
-    local candidate
+    # It writes exactly the arguments it is given, so changing or removing the
+    # overlay cap in sakala.env changes the registration on the next run.
+    local candidate runtime_args=(--platform=systrap)
+    # root:self keeps a sandbox's root filesystem writes in a file next to its
+    # rootfs on the host (gVisor's default medium); size= caps that file.
+    [ "$gvisor_overlay_size" = none ] || runtime_args+=("--overlay2=root:self,size=$gvisor_overlay_size")
     candidate=$(mktemp)
     [ ! -f /etc/docker/daemon.json ] || cp /etc/docker/daemon.json "$candidate"
-    /usr/local/bin/runsc install --config_file="$candidate" --runtime runsc -- --platform=systrap > /dev/null
+    /usr/local/bin/runsc install --config_file="$candidate" --runtime runsc -- "${runtime_args[@]}" > /dev/null
     dockerd --validate --config-file="$candidate" > /dev/null
     local registered=0
     if [ -f /etc/docker/daemon.json ] && cmp -s "$candidate" /etc/docker/daemon.json; then
         info "runsc is already registered with Docker."
     else
         registered=1
+        local reregistered=0
+        jq -e '.runtimes.runsc' /etc/docker/daemon.json > /dev/null 2>&1 && reregistered=1
         [ ! -f /etc/docker/daemon.json ] || cp -p /etc/docker/daemon.json "/etc/docker/daemon.json.bak-$(date -u +%Y%m%dT%H%M%SZ)"
         write_file /etc/docker/daemon.json 0644 < "$candidate"
-        info "Registered runsc in /etc/docker/daemon.json."
+        info "Registered runsc in /etc/docker/daemon.json with ${runtime_args[*]}."
+        # Docker passes the arguments when a sandbox starts, so running ones keep theirs.
+        [ "$reregistered" -eq 0 ] || info "Projects already running take the new runsc settings at their next deploy, restart, or wake."
     fi
     rm -f "$candidate"
 
@@ -476,6 +502,10 @@ SAKALA_STATE_DIR=$SAKALA_STATE_DIR
 SAKALA_API_LOOPBACK_PORT=8100
 SAKALA_CONSOLE_LOOPBACK_PORT=8101
 SAKALA_MAX_ACTIVE_CONTAINERS=$max_active_containers
+# Most that one project may write to its container's root filesystem under gVisor
+# (runsc --overlay2=root:self,size=...), such as 512m or 2g. none removes the cap,
+# so one project can fill the server's disk. Read docs/configuration.md first.
+SAKALA_GVISOR_OVERLAY_SIZE=$gvisor_overlay_size
 # Addresses the runtime router accepts X-Forwarded-* headers from: the subnet of
 # the sakala-runtime network, read again on every run. To use other addresses,
 # set the override (IP addresses or CIDR ranges separated by spaces); read

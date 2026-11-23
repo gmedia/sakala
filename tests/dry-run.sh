@@ -83,6 +83,15 @@ lacks /etc/sakala/agent.env '${'
 contains /etc/sakala/edge/run-tls.caddy 'on_demand'
 contains /etc/docker/daemon.json '"runsc"'
 contains /etc/docker/daemon.json 'default-address-pools'
+jq -e '.runtimes.runsc.runtimeArgs == ["--platform=systrap", "--overlay2=root:self,size=1g"]' /etc/docker/daemon.json > /dev/null &&
+    pass "runsc caps root filesystem writes at 1g by default" || fail "runsc arguments: $(jq -c '.runtimes.runsc' /etc/docker/daemon.json)"
+contains /etc/sakala/sakala.env 'SAKALA_GVISOR_OVERLAY_SIZE=1g'
+lacks /etc/sakala/agent.env 'SAKALA_IMAGE_GC_MAX_AGE_SECONDS'
+contains /etc/sakala/agent.env 'SAKALA_PUBLIC_CONSOLE_URL=https://app.sakala.example.com'
+# Hosted Sakala's privasi-v2 date does not reach a self-hosted installation.
+contains /etc/sakala/secrets/api.env 'SAKALA_LEGAL_PRIVACY_NOTICE_VERSION=privasi-v1'
+grep -qx 'SAKALA_LEGAL_PRIVACY_NOTICE_EFFECTIVE_AT=' /etc/sakala/secrets/api.env &&
+    pass "api.env sets no effective date for the privacy notice" || fail "api.env has another privacy notice effective date"
 contains /etc/systemd/system/sakala-backup.service 'ExecStart=/opt/sakala/scripts/backup.sh'
 grep -q 'gvisor.tar.zstd: OK' /root/install.log && pass "gVisor archive matched its .sha512" || fail "gVisor checksum line missing"
 /usr/local/bin/runsc --version | grep -q 'release-' && pass "runsc installed: $(/usr/local/bin/runsc --version | head -n 1)" || fail "runsc not installed"
@@ -121,6 +130,26 @@ for bad in private_ranges 0.0.0.0/0 ::/0; do
     expect_fail "refuses the trusted proxies override $bad" 'TRUSTED_PROXIES_OVERRIDE in .* must be' "${install[@]}"
 done
 set_override ''
+
+# The overlay cap follows sakala.env: another size, none for no cap, and a malformed value refused up front.
+set_overlay() { sed -i "s|^SAKALA_GVISOR_OVERLAY_SIZE=.*|SAKALA_GVISOR_OVERLAY_SIZE=$1|" /etc/sakala/sakala.env; }
+runsc_args() { jq -c '.runtimes.runsc.runtimeArgs' /etc/docker/daemon.json; }
+set_overlay 2g
+if "${install[@]}" > /root/overlay.log 2>&1; then pass "rerun with SAKALA_GVISOR_OVERLAY_SIZE=2g"; else fail "rerun with an overlay size"; tail -20 /root/overlay.log; fi
+[ "$(runsc_args)" = '["--platform=systrap","--overlay2=root:self,size=2g"]' ] && pass "runsc registered again with size=2g" || fail "runsc arguments after 2g: $(runsc_args)"
+contains /etc/sakala/sakala.env 'SAKALA_GVISOR_OVERLAY_SIZE=2g'
+set_overlay none
+if "${install[@]}" > /root/overlay.log 2>&1; then pass "rerun with SAKALA_GVISOR_OVERLAY_SIZE=none"; else fail "rerun without an overlay cap"; tail -20 /root/overlay.log; fi
+[ "$(runsc_args)" = '["--platform=systrap"]' ] && pass "none registers runsc without a cap" || fail "runsc arguments after none: $(runsc_args)"
+for bad in 1 1gb -1g '1g,root:memory'; do
+    set_overlay "$bad"
+    before_daemon=$(sha256sum /etc/docker/daemon.json)
+    expect_fail "refuses SAKALA_GVISOR_OVERLAY_SIZE=$bad" 'SAKALA_GVISOR_OVERLAY_SIZE must be' "${install[@]}"
+    [ "$before_daemon" = "$(sha256sum /etc/docker/daemon.json)" ] || fail "a refused overlay size $bad changed daemon.json"
+done
+set_overlay 1g
+if "${install[@]}" > /root/overlay.log 2>&1; then pass "rerun back to SAKALA_GVISOR_OVERLAY_SIZE=1g"; else fail "rerun back to 1g"; tail -20 /root/overlay.log; fi
+[ "$(runsc_args)" = '["--platform=systrap","--overlay2=root:self,size=1g"]' ] && pass "runsc back at size=1g" || fail "runsc arguments after 1g: $(runsc_args)"
 
 if SAKALA_DNS_API_TOKEN=test-token-123 "${install[@]}" --tls dns --dns-provider cloudflare > /root/dns.log 2>&1; then pass "DNS mode dry run"; else fail "DNS mode dry run"; tail -20 /root/dns.log; fi
 mode_is 600 /etc/sakala/secrets/dns.env
