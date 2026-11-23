@@ -104,7 +104,9 @@ Replika hanya cocok untuk aplikasi stateless. File yang ditulis ke disk containe
 
 Sleep otomatis menghentikan project yang tidak menerima request selama sekian menit, dan menyalakannya lagi saat diminta. Container dan route-nya disimpan, jadi alamat project tetap. Di instalasi ini sleep mati: `api.env` berisi `SAKALA_PROJECT_IDLE_SLEEP_MINUTES=0`.
 
-Pengunjung yang membuka project yang sedang tidur melihat halaman tunggu dari agent. Halaman itu meminta API membangunkan project lewat `https://api.<domain>`, yaitu `SAKALA_PUBLIC_API_URL` di `agent.env`, lalu memuat ulang dirinya sampai project menyala. Agent sendiri tetap menghubungi API lewat loopback (`SAKALA_API_URL=http://127.0.0.1:8100`); alamat publik hanya dipakai untuk permintaan dari browser. Pemilik project juga bisa menyalakannya dari Console.
+Pengunjung yang membuka project yang sedang tidur melihat halaman tunggu dari agent. Halaman itu meminta API membangunkan project lewat `https://api.<domain>`, yaitu `SAKALA_PUBLIC_API_URL` di `agent.env`, lalu memuat ulang dirinya sampai project menyala. Agent sendiri tetap menghubungi API lewat loopback (`SAKALA_API_URL=http://127.0.0.1:8100`); alamat publik hanya dipakai untuk permintaan dari browser. Pemilik project juga bisa menyalakannya dari Console. Halaman itu, dan halaman untuk project yang tidak boleh dibangunkan, menautkan pemilik project ke `https://app.<domain>` lewat `SAKALA_PUBLIC_CONSOLE_URL` di `agent.env` (agent setelah v0.15.0).
+
+Alamat di bawah `run.<domain>` yang tidak punya project, misalnya project yang sudah dihapus, dijawab router dengan halaman "Belum ada aplikasi di alamat ini" berstatus 404 yang menautkan Console yang sama. Halaman itu tidak menampilkan ulang alamatnya dan tidak pernah di-cache.
 
 Untuk menyalakannya:
 

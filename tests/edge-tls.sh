@@ -57,7 +57,7 @@ docker network create "$prefix-project" > /dev/null
 docker network create "$prefix-public" > /dev/null
 trusted=$(docker network inspect "$prefix" --format '{{range .IPAM.Config}}{{.Subnet}} {{end}}')
 docker run -d --name "$prefix-router" --network "$prefix" --network-alias sakala-caddy \
-    -e SAKALA_RUNTIME_TRUSTED_PROXIES="$trusted" \
+    -e SAKALA_RUNTIME_TRUSTED_PROXIES="$trusted" -e SAKALA_DOMAIN=example.test \
     -v "$PWD/caddy/runtime.Caddyfile:/etc/caddy/Caddyfile:ro" \
     -v "$work/sites:/etc/caddy/sites:ro" \
     "$SAKALA_CADDY_IMAGE" > /dev/null
@@ -88,6 +88,20 @@ if ask known.run.example.test; then pass "ask: a routed project may get a certif
 if ask unknown.run.example.test; then fail "ask: an unknown project was allowed"; else pass "ask: an unknown project is refused"; fi
 if ask known.run.example.test.evil.example; then fail "ask: a name outside run.<domain> was allowed"; else pass "ask: a name outside run.<domain> is refused"; fi
 if ask ''; then fail "ask: an empty name was allowed"; else pass "ask: an empty name is refused"; fi
+
+# The router's answer for a hostname it has no route for: the not-found page,
+# 404, never cached, the Console at app.<domain>, and the hostname not repeated.
+page=$(docker run --rm --network "$prefix" "$SAKALA_CADDY_IMAGE" sh -c \
+    'printf "GET / HTTP/1.0\r\nHost: gone.run.example.test\r\n\r\n" | nc sakala-caddy 80' 2>&1 || true)
+if grep -q '^HTTP/1.0 404' <<< "$page" && grep -qi '^Cache-Control: no-store' <<< "$page" \
+    && grep -qi '^X-Sakala-Route: missing' <<< "$page" \
+    && grep -q '<title>Belum ada aplikasi di alamat ini</title>' <<< "$page" \
+    && grep -q '<a href="https://app.example.test">Console Sakala</a>' <<< "$page" \
+    && ! grep -q 'gone.run.example.test' <<< "$page"; then
+    pass "router: an unknown hostname gets the not-found page, linking app.<domain>"
+else
+    fail "router: unknown hostname answered: $(head -c 600 <<< "$page")"
+fi
 
 port=$(docker port "$prefix-edge" 443/tcp | head -n 1 | sed 's/.*://')
 body=$(curl -sk --max-time 20 --resolve "known.run.example.test:$port:127.0.0.1" "https://known.run.example.test:$port/" || true)

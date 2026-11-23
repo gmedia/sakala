@@ -193,6 +193,8 @@ services:
       # would trust nobody and tell every app that visitors came over plain HTTP,
       # so a missing value stops Compose instead.
       SAKALA_RUNTIME_TRUSTED_PROXIES: ${SAKALA_RUNTIME_TRUSTED_PROXIES:?run install.sh or upgrade.sh to set SAKALA_RUNTIME_TRUSTED_PROXIES in /etc/sakala/sakala.env}
+      # The not-found page for an unknown project hostname links app.<domain>.
+      SAKALA_DOMAIN: ${SAKALA_DOMAIN:?set SAKALA_DOMAIN in /etc/sakala/sakala.env}
     volumes:
       - ./caddy/runtime.Caddyfile:/etc/caddy/Caddyfile:ro
       - ${SAKALA_STATE_DIR:-/var/lib/sakala}/caddy/sites:/etc/caddy/sites:ro
