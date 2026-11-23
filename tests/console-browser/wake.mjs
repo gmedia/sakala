@@ -11,7 +11,12 @@
 //
 // Passes when:
 //   - the first load of PROJECT_URL answers 503, the agent's waiting page,
-//   - the page sends POST WAKE_URL and that request does not fail,
+//   - the page sends POST WAKE_URL and the API answers at least one with a 2xx,
+//   - no wake request fails, except with net::ERR_NETWORK_CHANGED: since agent
+//     v0.16.0 the page sends the wake again every 15 seconds, and Chrome, which
+//     runs on the same machine as Docker here, aborts a request in flight when the
+//     waking container's network interface appears. A visitor's browser does not
+//     share the server's interfaces, so it never sees that,
 //   - a later load of PROJECT_URL, which the page starts by itself, answers 200
 //     within the page's own wait (120 seconds), with no click or reload by the test.
 
@@ -31,7 +36,10 @@ const POLL_MS = 1_000;
 const problems = [];
 const loads = [];
 const wakeRequests = [];
+const wakeAnswers = [];
 const failed = [];
+// Chrome's error when the machine's network interfaces change under a request.
+const NETWORK_CHANGED = 'net::ERR_NETWORK_CHANGED';
 
 const browser = await chromium.launch({ channel: process.env.CHROME_CHANNEL || undefined });
 try {
@@ -41,6 +49,7 @@ try {
 		if (request.isNavigationRequest() && request.frame() === page.mainFrame()) {
 			loads.push({ status: response.status(), at: Date.now() });
 		}
+		if (request.url() === wakeUrl && request.method() === 'POST') wakeAnswers.push(response.status());
 	});
 	page.on('request', (request) => {
 		if (request.url() === wakeUrl) wakeRequests.push(request.method());
@@ -61,12 +70,15 @@ try {
 	const woke = loads.find((load) => load.status === 200);
 	if (!woke) problems.push(`${projectUrl} did not answer 200 within ${WAKE_TIMEOUT_MS / 1000} seconds`);
 	if (!wakeRequests.includes('POST')) problems.push(`the waiting page did not send POST ${wakeUrl}`);
-	const wakeFailures = failed.filter((line) => line.includes(wakeUrl));
+	if (!wakeAnswers.some((status) => status >= 200 && status < 300)) {
+		problems.push(`no POST ${wakeUrl} was answered with a 2xx (answers: ${wakeAnswers.join(', ') || 'none'})`);
+	}
+	const wakeFailures = failed.filter((line) => line.includes(wakeUrl) && !line.endsWith(NETWORK_CHANGED));
 	if (wakeFailures.length > 0) problems.push(`the wake request failed: ${wakeFailures.join('; ')}`);
 
 	console.log(`browser: ${browser.version()}`);
 	console.log(`loads of the project page: ${loads.map((load) => load.status).join(', ') || 'none'}`);
-	console.log(`wake requests: ${wakeRequests.join(', ') || 'none'}`);
+	console.log(`wake requests: ${wakeRequests.join(', ') || 'none'}; answers: ${wakeAnswers.join(', ') || 'none'}`);
 	if (woke) console.log(`awake after ${Math.round((woke.at - started) / 1000)} seconds`);
 	if (failed.length > 0) console.log(`failed requests: ${failed.join('; ')}`);
 } finally {
