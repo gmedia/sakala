@@ -70,6 +70,8 @@ for mode in on-demand dns; do
 
     got=$(jq -r '.services["runtime-caddy"].environment.SAKALA_RUNTIME_TRUSTED_PROXIES // "missing"' <<< "$json")
     [ "$got" = "$trusted" ] && pass "$mode: the runtime router gets SAKALA_RUNTIME_TRUSTED_PROXIES" || fail "$mode: runtime router trusts: $got"
+    got=$(jq -r '.services["runtime-caddy"].environment.SAKALA_DOMAIN // "missing"' <<< "$json")
+    [ "$got" = sakala.example.com ] && pass "$mode: the runtime router gets SAKALA_DOMAIN for its not-found page" || fail "$mode: runtime router SAKALA_DOMAIN: $got"
     holders=$(jq -r '.services | to_entries[] | select(.value.environment.SAKALA_RUNTIME_TRUSTED_PROXIES != null) | .key' <<< "$json" | tr '\n' ' ')
     [ "$holders" = "runtime-caddy " ] && pass "$mode: only the runtime router gets the trusted addresses" || fail "$mode: trusted addresses in: $holders"
 done
