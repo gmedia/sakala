@@ -86,7 +86,7 @@ contains /etc/docker/daemon.json 'default-address-pools'
 jq -e '.runtimes.runsc.runtimeArgs == ["--platform=systrap", "--overlay2=root:self,size=1g"]' /etc/docker/daemon.json > /dev/null &&
     pass "runsc caps root filesystem writes at 1g by default" || fail "runsc arguments: $(jq -c '.runtimes.runsc' /etc/docker/daemon.json)"
 contains /etc/sakala/sakala.env 'SAKALA_GVISOR_OVERLAY_SIZE=1g'
-lacks /etc/sakala/agent.env 'SAKALA_IMAGE_GC_MAX_AGE_SECONDS'
+grep -q '^SAKALA_IMAGE_GC_MAX_AGE_SECONDS=' /etc/sakala/agent.env && fail "agent.env still sets SAKALA_IMAGE_GC_MAX_AGE_SECONDS" || pass "agent.env does not set SAKALA_IMAGE_GC_MAX_AGE_SECONDS (ignored since agent v0.16.0)"
 contains /etc/sakala/agent.env 'SAKALA_PUBLIC_CONSOLE_URL=https://app.sakala.example.com'
 # Hosted Sakala's privasi-v2 date does not reach a self-hosted installation.
 contains /etc/sakala/secrets/api.env 'SAKALA_LEGAL_PRIVACY_NOTICE_VERSION=privasi-v1'
