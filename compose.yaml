@@ -174,7 +174,10 @@ services:
     <<: *hardening
     image: ${SAKALA_CONSOLE_IMAGE:?pin SAKALA_CONSOLE_IMAGE in versions.env}
     env_file:
-      - ${SAKALA_CONFIG_DIR:-/etc/sakala}/console.env
+      - path: ${SAKALA_CONFIG_DIR:-/etc/sakala}/console.env
+      # Operator overrides (docs and legal links). Never rewritten by the scripts.
+      - path: ${SAKALA_SECRETS_DIR:-/etc/sakala/secrets}/console.local.env
+        required: false
     ports:
       - "127.0.0.1:${SAKALA_CONSOLE_LOOPBACK_PORT:-8101}:8080"
     networks:

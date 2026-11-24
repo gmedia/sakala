@@ -103,6 +103,36 @@ check_resources() {
     [ "$max_active_containers" -le 20 ] || max_active_containers=20
 }
 
+# The docs and legal links the Console shows, and its abuse address. Unset, the
+# Console links hosted Sakala's pages; an operator sets their own in
+# console.local.env (docs/configuration.md, "Tautan Console").
+console_link_keys=(PUBLIC_DOCS_URL PUBLIC_TERMS_URL PUBLIC_ACCEPTABLE_USE_URL PUBLIC_PRIVACY_URL PUBLIC_ABUSE_EMAIL)
+console_legal_keys=(PUBLIC_TERMS_URL PUBLIC_ACCEPTABLE_USE_URL PUBLIC_PRIVACY_URL)
+
+# One value from console.local.env, without the quotes Compose would strip.
+console_local_get() {
+    local value
+    value=$(env_get "$SAKALA_SECRETS_DIR/console.local.env" "$1")
+    value=${value#[\"\']}
+    printf '%s' "${value%[\"\']}"
+}
+
+# Checked before anything changes: a value the Console's entrypoint refuses would
+# stop the Console after the database was already migrated.
+check_console_links() {
+    local key value
+    for key in "${console_link_keys[@]}"; do
+        value=$(console_local_get "$key")
+        [ -n "$value" ] || continue
+        case $key in
+            PUBLIC_ABUSE_EMAIL) valid_email "$value" ;;
+            # Page paths are appended to the docs base, so it takes no query or fragment.
+            PUBLIC_DOCS_URL) valid_console_link "$value" && [[ $value != *[?#]* ]] ;;
+            *) valid_console_link "$value" ;;
+        esac || die "$key in $SAKALA_SECRETS_DIR/console.local.env is not valid: $value. Read \"Tautan Console\" in docs/configuration.md."
+    done
+}
+
 collect_inputs() {
     local saved
     if [ -r "$SAKALA_ENV_FILE" ]; then
@@ -162,6 +192,7 @@ collect_inputs() {
     gvisor_overlay_size=${gvisor_overlay_size:-$default_gvisor_overlay_size}
     valid_gvisor_overlay_size "$gvisor_overlay_size" ||
         die "SAKALA_GVISOR_OVERLAY_SIZE must be a size such as 512m or 2g, or none for no cap, got: $gvisor_overlay_size"
+    check_console_links
 
     node_name=$(env_get "$SAKALA_ENV_FILE" SAKALA_NODE_NAME)
     node_name=${node_name:-$(hostname -s | tr -c 'a-zA-Z0-9-\n' '-')}
@@ -528,9 +559,12 @@ EOF
     render "$SAKALA_HOME/templates/storage.env.template" "$SAKALA_SECRETS_DIR/storage.env" 0600 \
         SAKALA_STORAGE_ACCESS_KEY SAKALA_STORAGE_SECRET_KEY
     render "$SAKALA_HOME/templates/console.env.template" "$SAKALA_CONFIG_DIR/console.env" 0644 \
-        SAKALA_DOMAIN SAKALA_REVERB_APP_KEY
+        SAKALA_DOMAIN SAKALA_ADMIN_EMAIL SAKALA_REVERB_APP_KEY
     [ -e "$SAKALA_SECRETS_DIR/api.local.env" ] ||
         write_file "$SAKALA_SECRETS_DIR/api.local.env" 0600 < "$SAKALA_HOME/templates/api.local.env.template"
+    # The Console's counterpart, for its docs and legal links, read after console.env.
+    [ -e "$SAKALA_SECRETS_DIR/console.local.env" ] ||
+        write_file "$SAKALA_SECRETS_DIR/console.local.env" 0600 < "$SAKALA_HOME/templates/console.local.env.template"
     # The agent's counterpart, read by sakala-agent.service after agent.env.
     [ -e "$SAKALA_SECRETS_DIR/agent.local.env" ] ||
         write_file "$SAKALA_SECRETS_DIR/agent.local.env" 0600 < "$SAKALA_HOME/templates/agent.local.env.template"
@@ -766,6 +800,14 @@ summary() {
         info "Certificates are requested on the first visit to each hostname."
     fi
     info "Emails only reach the API log until you set a mailer: docs/configuration.md."
+    local key unset_legal=()
+    for key in "${console_legal_keys[@]}"; do
+        [ -n "$(console_local_get "$key")" ] || unset_legal+=("$key")
+    done
+    if [ "${#unset_legal[@]}" -gt 0 ]; then
+        warn "The Console links hosted Sakala's legal documents, which do not cover this server, for: ${unset_legal[*]}."
+        warn "Publish your own and set them in $SAKALA_SECRETS_DIR/console.local.env (docs/configuration.md, \"Tautan Console\")."
+    fi
     info "Keep the age private key and $SAKALA_SECRETS_DIR/generated.env off this server too."
 }
 

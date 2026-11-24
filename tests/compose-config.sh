@@ -21,7 +21,7 @@ fail() { printf 'FAIL %s\n' "$1" >&2; failures=$((failures + 1)); }
 
 mkdir -p "$work/secrets"
 for file in api.env database.env storage.env github-app.pem; do : > "$work/secrets/$file"; done
-printf 'PUBLIC_API_URL=https://api.sakala.example.com\n' > "$work/console.env"
+printf 'PUBLIC_API_URL=https://api.sakala.example.com\nPUBLIC_ABUSE_EMAIL=admin@example.com\n' > "$work/console.env"
 
 # What install.sh writes from the sakala-runtime network: here an IPv4 and an IPv6 subnet.
 trusted='172.18.0.0/16 fd00:5ac:a1a::/64'
@@ -75,6 +75,25 @@ for mode in on-demand dns; do
     holders=$(jq -r '.services | to_entries[] | select(.value.environment.SAKALA_RUNTIME_TRUSTED_PROXIES != null) | .key' <<< "$json" | tr '\n' ' ')
     [ "$holders" = "runtime-caddy " ] && pass "$mode: only the runtime router gets the trusted addresses" || fail "$mode: trusted addresses in: $holders"
 done
+
+# console.local.env is optional and, like api.local.env, wins over the rendered file.
+console_env() { jq -r '.services.console.environment | "\(.PUBLIC_API_URL) \(.PUBLIC_ABUSE_EMAIL) \(.PUBLIC_TERMS_URL // "unset")"' <<< "$1"; }
+if json=$(render on-demand 2> "$work/err"); then
+    got=$(console_env "$json")
+    [ "$got" = "https://api.sakala.example.com admin@example.com unset" ] &&
+        pass "without console.local.env the Console gets console.env alone" || fail "console environment without console.local.env: $got"
+else
+    fail "compose config without console.local.env: $(cat "$work/err")"
+fi
+printf 'PUBLIC_TERMS_URL=https://example.com/syarat\nPUBLIC_ABUSE_EMAIL=abuse@example.com\n' > "$work/secrets/console.local.env"
+if json=$(render on-demand 2> "$work/err"); then
+    got=$(console_env "$json")
+    [ "$got" = "https://api.sakala.example.com abuse@example.com https://example.com/syarat" ] &&
+        pass "console.local.env adds to console.env and wins over it" || fail "console environment with console.local.env: $got"
+else
+    fail "compose config with console.local.env: $(cat "$work/err")"
+fi
+rm -f "$work/secrets/console.local.env"
 
 # Without the value the router would trust nobody and tell every app the visitor used plain HTTP.
 for line in '' 'SAKALA_RUNTIME_TRUSTED_PROXIES='; do

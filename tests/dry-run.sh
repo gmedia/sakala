@@ -55,7 +55,7 @@ else
 fi
 
 mode_is 700 /etc/sakala/secrets
-for file in generated.env api.env database.env storage.env api.local.env agent.local.env backup.age-recipients; do
+for file in generated.env api.env database.env storage.env api.local.env agent.local.env console.local.env backup.age-recipients; do
     mode_is 600 "/etc/sakala/secrets/$file"
 done
 mode_is 640 /etc/sakala/secrets/github-app.pem
@@ -70,6 +70,14 @@ lacks /etc/sakala/console.env 'sakala.dev'
 reverb_key=$(sed -n 's/^SAKALA_REVERB_APP_KEY=//p' /etc/sakala/secrets/generated.env)
 contains /etc/sakala/console.env "PUBLIC_REVERB_KEY=$reverb_key"
 lacks /etc/sakala/console.env 'REVERB_APP_SECRET'
+# The abuse address is the admin's, like the API's; the docs and legal links stay unset
+# (hosted Sakala's) until the operator sets them, and install.sh says so.
+contains /etc/sakala/console.env 'PUBLIC_ABUSE_EMAIL=admin@example.com'
+grep -qE '^PUBLIC_(DOCS|TERMS|ACCEPTABLE_USE|PRIVACY)_URL=' /etc/sakala/console.env &&
+    fail "console.env sets a docs or legal link" || pass "console.env sets no docs or legal link"
+grep -q '^PUBLIC_' /etc/sakala/secrets/console.local.env && fail "console.local.env sets a value by default" || pass "console.local.env sets nothing by default"
+grep -q "links hosted Sakala's legal documents.*PUBLIC_TERMS_URL PUBLIC_ACCEPTABLE_USE_URL PUBLIC_PRIVACY_URL" /root/install.log &&
+    pass "install.sh warns that the legal links are hosted Sakala's" || fail "no warning about the legal links"
 contains /etc/sakala/agent.env 'SAKALA_CONTAINER_RUNTIME=runsc'
 contains /etc/sakala/agent.env 'SAKALA_API_URL=http://127.0.0.1:8100'
 contains /etc/sakala/agent.env 'SAKALA_PROJECT_DOMAIN_SUFFIXES=run.sakala.example.com'
@@ -150,6 +158,28 @@ done
 set_overlay 1g
 if "${install[@]}" > /root/overlay.log 2>&1; then pass "rerun back to SAKALA_GVISOR_OVERLAY_SIZE=1g"; else fail "rerun back to 1g"; tail -20 /root/overlay.log; fi
 [ "$(runsc_args)" = '["--platform=systrap","--overlay2=root:self,size=1g"]' ] && pass "runsc back at size=1g" || fail "runsc arguments after 1g: $(runsc_args)"
+
+# The Console's links in console.local.env: values its entrypoint would refuse stop
+# install.sh before anything changes, valid ones (quoted or not) silence the warning.
+console_local=/etc/sakala/secrets/console.local.env
+cp "$console_local" /root/console.local.env.orig
+for bad in 'PUBLIC_TERMS_URL=example.com/syarat' 'PUBLIC_PRIVACY_URL=https://example.com/a b' \
+    'PUBLIC_ACCEPTABLE_USE_URL=ftp://example.com/aup' 'PUBLIC_DOCS_URL=https://example.com/docs?x=1' \
+    'PUBLIC_TERMS_URL=https://example.com:99999/syarat' 'PUBLIC_ABUSE_EMAIL=abuse'; do
+    printf '%s\n' "$bad" > "$console_local"
+    expect_fail "refuses ${bad%%=*} ${bad#*=}" "${bad%%=*} in .* is not valid" "${install[@]}"
+done
+printf '%s\n' 'PUBLIC_TERMS_URL=https://example.com/syarat?v=1#pasal-2' \
+    'PUBLIC_ACCEPTABLE_USE_URL="https://example.com:8443/penggunaan-wajar"' "PUBLIC_PRIVACY_URL='https://example.com/privasi'" \
+    'PUBLIC_DOCS_URL=https://docs.example.com/sakala' 'PUBLIC_ABUSE_EMAIL=abuse@example.com' > "$console_local"
+if "${install[@]}" > /root/links.log 2>&1; then pass "rerun with the Console's links set"; else fail "rerun with the Console's links set"; tail -20 /root/links.log; fi
+grep -q "legal documents" /root/links.log && fail "still warns with every legal link set" || pass "no legal link warning once all three are set"
+contains "$console_local" 'PUBLIC_TERMS_URL=https://example.com/syarat?v=1#pasal-2'
+printf 'PUBLIC_TERMS_URL=https://example.com/syarat\nPUBLIC_PRIVACY_URL=\n' > "$console_local"
+if "${install[@]}" > /root/links.log 2>&1; then pass "rerun with an empty legal link"; else fail "rerun with an empty legal link"; tail -20 /root/links.log; fi
+grep -q "legal documents.*for: PUBLIC_ACCEPTABLE_USE_URL PUBLIC_PRIVACY_URL\.$" /root/links.log &&
+    pass "the warning names only the unset and empty legal links" || fail "warning for a partial set: $(grep 'legal documents' /root/links.log)"
+cp /root/console.local.env.orig "$console_local"
 
 if SAKALA_DNS_API_TOKEN=test-token-123 "${install[@]}" --tls dns --dns-provider cloudflare > /root/dns.log 2>&1; then pass "DNS mode dry run"; else fail "DNS mode dry run"; tail -20 /root/dns.log; fi
 mode_is 600 /etc/sakala/secrets/dns.env
