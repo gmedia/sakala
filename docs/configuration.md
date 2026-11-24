@@ -195,7 +195,7 @@ Installer memeriksa nilainya sebelum mengubah apa pun di server, dengan aturan y
 
 `PUBLIC_ABUSE_EMAIL` default ke email admin, sama seperti `SAKALA_ABUSE_EMAIL` di `api.env`. Kalau kamu mengganti `SAKALA_ABUSE_EMAIL` di `api.local.env`, isi alamat yang sama di sini. Panduan Sakala hosted berlaku juga untuk instalasi ini, jadi `PUBLIC_DOCS_URL` cukup dibiarkan kosong. Kalau kamu menerbitkan salinan sendiri, struktur halaman dan anchor-nya harus sama dengan docs Sakala, karena Console menautkannya langsung.
 
-Batasan: Console v0.12.0, yang dipin sekarang, belum membaca kelima variabel ini dan selalu menautkan `https://sakala.dev`. Pengaturannya mulai berlaku setelah `versions.env` memin rilis Console yang memuat sakala-console #168. Mengisinya dari sekarang aman, karena v0.12.0 mengabaikannya.
+Console v0.13.0 dan yang lebih baru membaca kelima variabel ini setiap kali container-nya start. Setelah mengubah `console.local.env`, jalankan `sudo sakala-compose up -d console`.
 
 ## Dokumen hukum
 
@@ -209,7 +209,7 @@ Sebagai pengelola instalasi, kamu yang bertanggung jawab atas data pengguna di s
 
 Perintah `legal:announce-change` dari API v0.11.0 tidak pernah berjalan otomatis. Ringkasan emailnya hanya ada untuk dokumen Sakala hosted, jadi untuk versi buatanmu perintah itu menolak berjalan; umumkan perubahan dengan caramu sendiri.
 
-Batasan: Console v0.12.0 masih menautkan halaman daftar dan layar persetujuan ke dokumen di `https://sakala.dev`. Tautan di `console.local.env` baru berlaku setelah `versions.env` memin rilis Console yang memuat sakala-console #168 ([Tautan Console](#tautan-console)).
+Selama `PUBLIC_TERMS_URL`, `PUBLIC_ACCEPTABLE_USE_URL`, dan `PUBLIC_PRIVACY_URL` belum diisi, halaman daftar dan layar persetujuan Console menautkan dokumen di `https://sakala.dev` ([Tautan Console](#tautan-console)).
 
 ## Domain Console dan project
 
