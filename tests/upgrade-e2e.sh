@@ -209,6 +209,13 @@ check_migrations() {
     pending=$(grep -c 'Pending' <<< "$status" || true)
     [ "$pending" -eq 0 ] || { grep 'Pending' <<< "$status" >&2; fail "$pending migration(s) are pending after the upgrade."; }
     ran=$(sql 'select count(*) from migrations')
+    # A pin change that keeps the API image (an agent-only release, for example)
+    # brings no migration; then "none pending" above is the whole check.
+    if [ "$(pin "$from_sha" SAKALA_API_IMAGE)" = "$(pin "$to_sha" SAKALA_API_IMAGE)" ]; then
+        [ "$ran" -eq "$migrations" ] || fail "The API image did not change, yet $((ran - migrations)) migration(s) ran."
+        pass "the API image did not change, so no migration ran and none is pending ($ran)"
+        return
+    fi
     [ "$ran" -gt "$migrations" ] || fail "No migration ran during the upgrade ($ran before and after)."
     pass "$((ran - migrations)) migration(s) ran, none pending:"
     sql "select migration from migrations order by id offset $migrations" | sed 's/^/       /'
